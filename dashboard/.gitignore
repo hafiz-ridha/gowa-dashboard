@@ -1,0 +1,7 @@
+.env
+*.db
+*.db-shm
+*.db-wal
+whatsapp-dashboard
+whatsapp-dashboard.exe
+/tmp/

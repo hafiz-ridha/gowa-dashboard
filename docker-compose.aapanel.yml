@@ -1,0 +1,66 @@
+# Compose khusus aaPanel — dirancang supaya TIDAK BENTROK dengan container lain.
+#
+# Perbedaan dari docker-compose.full.yml:
+#   - container_name unik (gowa-core, gowa-dashboard) supaya mudah dikenali di Docker Manager aaPanel
+#   - port host tinggi (13000, 18088) supaya tidak bentrok dengan aaPanel sendiri / app lain
+#   - port HANYA bind ke 127.0.0.1 (loopback) — expose ke publik via Nginx reverse proxy aaPanel
+#   - network name unik (gowa-private)
+#
+# Pakai:
+#   docker compose -f docker-compose.aapanel.yml up -d --build
+
+services:
+  whatsapp_go:
+    container_name: gowa-core
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "10"
+    build:
+      context: .
+      dockerfile: ./docker/golang.Dockerfile
+    restart: unless-stopped
+    ports:
+      # Format: "host_ip:host_port:container_port"
+      # 127.0.0.1 = hanya bisa diakses dari server itu sendiri (aman).
+      # Akses publik via Nginx reverse proxy aaPanel.
+      - "127.0.0.1:13000:3000"
+    env_file:
+      - path: src/.env
+        required: false
+    volumes:
+      - ./storages:/app/storages
+      - ./statics:/app/statics
+    networks:
+      - gowa-private
+
+  dashboard:
+    container_name: gowa-dashboard
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "10"
+    build:
+      context: .
+      dockerfile: ./dashboard/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18088:8088"
+    env_file:
+      - path: dashboard/.env
+        required: false
+    environment:
+      WHATSAPP_API_URL: http://whatsapp_go:3000
+    depends_on:
+      - whatsapp_go
+    volumes:
+      - ./dashboard/data:/data
+    networks:
+      - gowa-private
+
+networks:
+  gowa-private:
+    name: gowa-private
+    driver: bridge

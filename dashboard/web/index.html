@@ -1,0 +1,861 @@
+<!doctype html>
+<html lang="id">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WhatsApp Dashboard</title>
+    <link rel="stylesheet"
+          href="https://cdnjs.cloudflare.com/ajax/libs/fomantic-ui/2.8.8/semantic.min.css">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fomantic-ui/2.8.8/semantic.min.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://unpkg.com/axios@1.6.7/dist/axios.min.js"></script>
+    <style>
+        body { background: #f6f7fb; padding: 0; }
+        .main-wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
+        .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+        .brand h1 { margin: 0; font-size: 26px; }
+        .brand .tag { font-size: 12px; color: #888; }
+        .ui.card.device { cursor: pointer; transition: transform 0.15s; }
+        .ui.card.device:hover { transform: translateY(-2px); }
+        .ui.card.device.selected { box-shadow: 0 0 0 2px #21ba45; }
+        .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+        .pill.on { background: #c8e6c9; color: #2e7d32; }
+        .pill.off { background: #ffcdd2; color: #c62828; }
+        .pill.warn { background: #fff3cd; color: #856404; }
+        .pill.recur { background: #e3f2fd; color: #1565c0; }
+        .pill.once { background: #ede7f6; color: #5e35b2; }
+        .day-pickers { display: flex; gap: 6px; flex-wrap: wrap; }
+        .day-pickers .btn { padding: 6px 12px; border: 1px solid #ddd; border-radius: 6px; cursor: pointer; background: #fff; font-size: 12px; }
+        .day-pickers .btn.active { background: #2185d0; color: #fff; border-color: #2185d0; }
+        pre.preview-list { background: #f4f6fa; padding: 10px; border-radius: 6px; font-size: 12px; margin: 8px 0 0; }
+        .schedule-row td { vertical-align: middle; }
+        .log-success { color: #2e7d32; }
+        .log-error { color: #c62828; }
+        .nav-tabs { margin-bottom: 16px; }
+    </style>
+</head>
+<body>
+<div id="app" class="main-wrap" v-cloak>
+    <div class="brand">
+        <i class="huge whatsapp green icon"></i>
+        <div>
+            <h1>WhatsApp Dashboard</h1>
+            <div class="tag">Multi-device · Pesan terjadwal · Reminder otomatis</div>
+        </div>
+        <div style="margin-left:auto">
+            <div class="ui label" :class="upstreamOk ? 'green' : 'red'">
+                <i class="circle icon"></i>
+                API: {{ upstreamUrl || 'unknown' }}
+            </div>
+        </div>
+    </div>
+
+    <div class="ui pointing secondary menu nav-tabs">
+        <a class="item" :class="{active: tab === 'devices'}" @click="tab='devices'">
+            <i class="mobile alternate icon"></i> Devices
+        </a>
+        <a class="item" :class="{active: tab === 'send'}" @click="tab='send'">
+            <i class="paper plane icon"></i> Kirim Sekarang
+        </a>
+        <a class="item" :class="{active: tab === 'schedules'}" @click="tab='schedules'">
+            <i class="calendar alternate icon"></i> Jadwal & Reminder
+            <span v-if="schedules.length" class="ui circular mini label">{{ schedules.length }}</span>
+        </a>
+        <a class="item" :class="{active: tab === 'logs'}" @click="tab='logs'">
+            <i class="history icon"></i> Riwayat
+        </a>
+    </div>
+
+    <!-- ================== DEVICES TAB ================== -->
+    <div v-if="tab === 'devices'">
+        <div class="ui top attached header">
+            <i class="mobile alternate icon"></i>
+            Daftar Device
+            <button class="ui right floated mini primary button" @click="openAddDevice"><i class="plus icon"></i> Tambah Device</button>
+            <button class="ui right floated mini button" @click="loadDevices"><i class="refresh icon"></i> Reload</button>
+        </div>
+        <div class="ui attached segment">
+            <div v-if="devicesLoading" class="ui active centered inline loader"></div>
+            <div v-else-if="!devices.length" class="ui info message">
+                Belum ada device. Klik <b>Tambah Device</b> di atas untuk mulai.
+            </div>
+            <div v-else class="ui three stackable cards">
+                <div v-for="d in devices" :key="d.device || d.id"
+                     class="ui card device"
+                     :class="{selected: selectedDevice === (d.device || d.id)}"
+                     @click="selectedDevice = (d.device || d.id)">
+                    <div class="content">
+                        <div class="header">
+                            <i class="mobile alternate icon"></i>
+                            {{ d.device || d.id || d.name || '(unnamed)' }}
+                        </div>
+                        <div class="meta">
+                            <span :class="['pill', d.is_logged_in ? 'on' : 'off']">
+                                {{ d.is_logged_in ? 'logged in' : 'logged out' }}
+                            </span>
+                            <span :class="['pill', d.is_connected ? 'on' : 'warn']" style="margin-left:6px">
+                                {{ d.is_connected ? 'connected' : 'disconnected' }}
+                            </span>
+                        </div>
+                        <div class="description" style="margin-top:10px;font-size:12px;color:#666">
+                            <div v-if="d.jid"><b>JID:</b> {{ d.jid }}</div>
+                            <div v-if="d.display_name"><b>Nama:</b> {{ d.display_name }}</div>
+                        </div>
+                    </div>
+                    <div class="extra content" @click.stop>
+                        <div class="ui mini buttons">
+                            <button v-if="!d.is_logged_in" class="ui green button" @click.stop="openLoginQR(d.device || d.id)">
+                                <i class="qrcode icon"></i> Scan QR
+                            </button>
+                            <button v-else class="ui orange button" @click.stop="doLogout(d.device || d.id)">
+                                <i class="sign-out icon"></i> Logout
+                            </button>
+                            <button class="ui blue button" @click.stop="doReconnect(d.device || d.id)" title="Reconnect">
+                                <i class="sync icon"></i>
+                            </button>
+                            <button class="ui red button" @click.stop="doDeleteDevice(d.device || d.id)" title="Hapus device">
+                                <i class="trash icon"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div v-if="selectedDevice" class="ui green message" style="margin-top:12px">
+                <i class="check icon"></i>
+                Device aktif untuk Kirim & Schedule: <b>{{ selectedDevice }}</b>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================== ADD DEVICE MODAL ================== -->
+    <div class="ui modal" id="add-device-modal">
+        <i class="close icon"></i>
+        <div class="header">Tambah Device WhatsApp</div>
+        <div class="scrolling content">
+            <form class="ui form" @submit.prevent="submitAddDevice">
+                <div class="field required">
+                    <label>Nama device (label saja, bebas)</label>
+                    <input v-model="addDevice.name" placeholder="contoh: toko-1, pribadi, admin"
+                           pattern="[A-Za-z0-9_\-]+" title="Hanya huruf, angka, underscore, dan strip">
+                    <small style="color:#888">Gunakan huruf/angka tanpa spasi. Nama ini cuma untuk Anda mengingatnya.</small>
+                </div>
+                <div class="field">
+                    <label>Metode login</label>
+                    <div class="ui form" style="padding-left:6px">
+                        <div class="grouped fields">
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" value="qr" v-model="addDevice.method" id="m-qr">
+                                    <label for="m-qr"><b>Scan QR</b> — buka WhatsApp di HP, scan QR yang akan muncul.</label>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" value="code" v-model="addDevice.method" id="m-code">
+                                    <label for="m-code"><b>Pairing code</b> — masukkan kode di WhatsApp (kalau kamera tidak bisa scan).</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="field" v-if="addDevice.method === 'code'">
+                    <label>Nomor WhatsApp (dengan kode negara, tanpa +)</label>
+                    <input v-model="addDevice.phone" placeholder="6289612345678">
+                </div>
+                <div v-if="addDevice.error" class="ui red message">{{ addDevice.error }}</div>
+                <button class="ui green button" :disabled="addDevice.loading">
+                    <i class="check icon"></i> {{ addDevice.loading ? 'Memproses...' : 'Buat & Lanjutkan' }}
+                </button>
+                <button type="button" class="ui button" @click="closeAddDevice">Batal</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================== QR / PAIRING DISPLAY MODAL ================== -->
+    <div class="ui modal" id="qr-modal">
+        <i class="close icon"></i>
+        <div class="header">
+            <i class="qrcode icon"></i> Login device: {{ loginFor.device_id }}
+        </div>
+        <div class="content" style="text-align:center">
+            <div v-if="loginFor.status === 'loading'">
+                <div class="ui active large inline loader"></div>
+                <p>Menyiapkan QR / kode...</p>
+            </div>
+            <div v-else-if="loginFor.status === 'qr'">
+                <p>Buka <b>WhatsApp</b> di HP → titik tiga → <b>Perangkat Tertaut</b> → <b>Tautkan Perangkat</b> → arahkan kamera ke gambar di bawah.</p>
+                <img v-if="loginFor.qr_link" :src="loginFor.qr_link" alt="QR Code"
+                     style="width:280px;height:280px;border:1px solid #ddd;border-radius:8px;padding:8px;background:#fff">
+                <p v-if="loginFor.qr_duration" style="margin-top:10px;color:#666">
+                    QR akan refresh dalam <b>{{ loginFor.countdown }}s</b>.
+                </p>
+                <div class="ui blue message" style="margin-top:12px;text-align:left">
+                    <i class="info circle icon"></i>
+                    Status: <b>{{ loginFor.statusText || 'menunggu scan...' }}</b>
+                </div>
+            </div>
+            <div v-else-if="loginFor.status === 'code'">
+                <p>Buka <b>WhatsApp</b> di HP → titik tiga → <b>Perangkat Tertaut</b> → <b>Tautkan dengan nomor telepon sebagai gantinya</b>, lalu masukkan kode berikut:</p>
+                <div style="font-size:38px;letter-spacing:6px;font-weight:bold;margin:20px 0;color:#21ba45;font-family:monospace">
+                    {{ loginFor.pair_code }}
+                </div>
+                <div class="ui blue message" style="text-align:left">
+                    <i class="info circle icon"></i>
+                    Status: <b>{{ loginFor.statusText || 'menunggu pairing...' }}</b>
+                </div>
+            </div>
+            <div v-else-if="loginFor.status === 'success'">
+                <i class="huge green check circle icon"></i>
+                <h2 class="ui header">Berhasil tersambung!</h2>
+                <p>Device <b>{{ loginFor.device_id }}</b> sudah logged in dan siap dipakai.</p>
+            </div>
+            <div v-else-if="loginFor.status === 'error'">
+                <i class="huge red times circle icon"></i>
+                <h3 class="ui header">{{ loginFor.error }}</h3>
+                <button class="ui blue button" @click="restartLogin">Coba lagi</button>
+            </div>
+        </div>
+        <div class="actions">
+            <button class="ui cancel button" @click="closeLoginModal">{{ loginFor.status === 'success' ? 'Tutup' : 'Batal' }}</button>
+        </div>
+    </div>
+
+    <!-- ================== SEND NOW TAB ================== -->
+    <div v-if="tab === 'send'">
+        <div class="ui top attached header">
+            <i class="paper plane icon"></i> Kirim Pesan Sekarang
+        </div>
+        <div class="ui attached segment">
+            <form class="ui form" @submit.prevent="doSendNow">
+                <div class="two fields">
+                    <div class="field">
+                        <label>Device</label>
+                        <select class="ui dropdown" v-model="sendForm.device_id">
+                            <option value="">— pilih device —</option>
+                            <option v-for="d in devices" :key="d.device || d.id" :value="d.device || d.id">{{ d.device || d.id }}</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>Tipe Pesan</label>
+                        <select class="ui dropdown" v-model="sendForm.message_type">
+                            <option value="text">Text</option>
+                            <option value="image">Image (URL)</option>
+                            <option value="video">Video (URL)</option>
+                            <option value="file">File (URL)</option>
+                            <option value="audio">Audio (URL)</option>
+                            <option value="location">Location</option>
+                            <option value="link">Link preview</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="field">
+                    <label>Penerima (nomor / JID)</label>
+                    <input v-model="sendForm.recipient" placeholder="6289605618749 atau xxxxx@g.us">
+                </div>
+                <component :is="'div'">
+                    <div class="field" v-if="sendForm.message_type === 'text'">
+                        <label>Pesan</label>
+                        <textarea rows="3" v-model="sendForm.message"></textarea>
+                    </div>
+                    <template v-if="['image','video','file','audio'].includes(sendForm.message_type)">
+                        <div class="field">
+                            <label>Media URL</label>
+                            <input v-model="sendForm.media_url" placeholder="https://...">
+                        </div>
+                        <div class="field" v-if="sendForm.message_type !== 'audio'">
+                            <label>Caption</label>
+                            <input v-model="sendForm.caption">
+                        </div>
+                    </template>
+                    <template v-if="sendForm.message_type === 'location'">
+                        <div class="two fields">
+                            <div class="field"><label>Latitude</label><input v-model="sendForm.latitude" placeholder="-6.2"></div>
+                            <div class="field"><label>Longitude</label><input v-model="sendForm.longitude" placeholder="106.8"></div>
+                        </div>
+                    </template>
+                    <template v-if="sendForm.message_type === 'link'">
+                        <div class="field"><label>Link URL</label><input v-model="sendForm.link_url" placeholder="https://example.com"></div>
+                        <div class="field"><label>Caption</label><input v-model="sendForm.caption"></div>
+                    </template>
+                </component>
+                <button class="ui primary button" :disabled="sending">
+                    <i class="paper plane icon"></i> {{ sending ? 'Sending...' : 'Kirim' }}
+                </button>
+                <button type="button" class="ui button" @click="sendForm = freshSendForm()">Reset</button>
+                <div v-if="sendResult" class="ui message" :class="sendResult.ok ? 'green' : 'red'" style="margin-top:12px">
+                    <pre style="white-space:pre-wrap;margin:0;font-size:12px">{{ sendResult.text }}</pre>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================== SCHEDULES TAB ================== -->
+    <div v-if="tab === 'schedules'">
+        <div class="ui top attached header">
+            <i class="calendar alternate icon"></i> Jadwal & Reminder
+            <button class="ui right floated mini primary button" @click="openScheduleEditor()"><i class="plus icon"></i> Buat Jadwal Baru</button>
+            <button class="ui right floated mini button" @click="loadSchedules"><i class="refresh icon"></i> Reload</button>
+        </div>
+        <div class="ui attached segment">
+            <table class="ui celled compact table">
+                <thead>
+                <tr>
+                    <th>Nama</th>
+                    <th>Device</th>
+                    <th>Tujuan</th>
+                    <th>Tipe</th>
+                    <th>Jadwal</th>
+                    <th>Next Run</th>
+                    <th>Last</th>
+                    <th>Status</th>
+                    <th style="width:160px">Aksi</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr v-if="!schedules.length"><td colspan="9" style="text-align:center;color:#999">Belum ada jadwal.</td></tr>
+                <tr v-for="s in schedules" :key="s.id" class="schedule-row">
+                    <td><b>{{ s.name }}</b></td>
+                    <td>{{ s.device_id || '—' }}</td>
+                    <td><code>{{ s.recipient }}</code></td>
+                    <td><span class="ui label tiny">{{ s.message_type }}</span></td>
+                    <td>
+                        <span class="pill" :class="s.schedule_type === 'once' ? 'once' : 'recur'">
+                            {{ formatScheduleType(s) }}
+                        </span>
+                    </td>
+                    <td><small>{{ formatTime(s.next_run_at) }}</small></td>
+                    <td><small>{{ formatTime(s.last_run_at) }}</small></td>
+                    <td>
+                        <span :class="['pill', s.enabled ? 'on' : 'off']">{{ s.enabled ? 'aktif' : 'jeda' }}</span>
+                        <div v-if="s.last_status" style="font-size:11px;margin-top:4px"
+                             :class="s.last_status === 'success' ? 'log-success' : 'log-error'">
+                            {{ s.last_status }} · runs: {{ s.run_count }}
+                        </div>
+                    </td>
+                    <td>
+                        <button class="ui mini icon button" title="Edit" @click="openScheduleEditor(s)"><i class="edit icon"></i></button>
+                        <button class="ui mini icon button" :class="s.enabled ? 'orange' : 'green'"
+                                :title="s.enabled ? 'Jeda' : 'Aktifkan'" @click="toggleSchedule(s)">
+                            <i :class="(s.enabled ? 'pause' : 'play') + ' icon'"></i>
+                        </button>
+                        <button class="ui mini icon blue button" title="Jalankan sekarang" @click="runScheduleNow(s)"><i class="bolt icon"></i></button>
+                        <button class="ui mini icon button" title="Lihat log" @click="openLogs(s)"><i class="list icon"></i></button>
+                        <button class="ui mini icon red button" title="Hapus" @click="deleteSchedule(s)"><i class="trash icon"></i></button>
+                    </td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- ================== LOGS TAB ================== -->
+    <div v-if="tab === 'logs'">
+        <div class="ui top attached header">
+            <i class="history icon"></i> Riwayat Eksekusi
+            <button class="ui right floated mini button" @click="loadRecentLogs"><i class="refresh icon"></i> Reload</button>
+        </div>
+        <div class="ui attached segment">
+            <table class="ui celled compact table">
+                <thead><tr>
+                    <th>Waktu</th><th>Schedule ID</th><th>Status</th><th>Detail</th>
+                </tr></thead>
+                <tbody>
+                <tr v-if="!recentLogs.length"><td colspan="4" style="text-align:center;color:#999">Belum ada log.</td></tr>
+                <tr v-for="l in recentLogs" :key="l.id">
+                    <td><small>{{ formatTime(l.ran_at) }}</small></td>
+                    <td>#{{ l.schedule_id }}</td>
+                    <td :class="l.status === 'success' ? 'log-success' : 'log-error'"><b>{{ l.status }}</b></td>
+                    <td><small>{{ l.error || (l.response && l.response.slice(0, 200)) || '' }}</small></td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- ================== SCHEDULE EDITOR MODAL ================== -->
+    <div class="ui modal" id="schedule-modal">
+        <i class="close icon"></i>
+        <div class="header">{{ editor.id ? 'Edit Jadwal #' + editor.id : 'Jadwal / Reminder Baru' }}</div>
+        <div class="scrolling content">
+            <form class="ui form">
+                <div class="two fields">
+                    <div class="field required">
+                        <label>Nama jadwal</label>
+                        <input v-model="editor.name" placeholder="Reminder bayar listrik">
+                    </div>
+                    <div class="field">
+                        <label>Device</label>
+                        <select class="ui dropdown" v-model="editor.device_id">
+                            <option value="">— pakai default device —</option>
+                            <option v-for="d in devices" :key="d.device || d.id" :value="d.device || d.id">{{ d.device || d.id }}</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="field required">
+                    <label>Penerima (nomor / JID)</label>
+                    <input v-model="editor.recipient" placeholder="6289605618749 atau xxxxx@g.us">
+                </div>
+
+                <div class="ui horizontal divider">Isi Pesan</div>
+
+                <div class="field required">
+                    <label>Tipe pesan</label>
+                    <select class="ui dropdown" v-model="editor.message_type">
+                        <option value="text">Text</option>
+                        <option value="image">Image (URL)</option>
+                        <option value="video">Video (URL)</option>
+                        <option value="file">File (URL)</option>
+                        <option value="audio">Audio (URL)</option>
+                        <option value="location">Location</option>
+                        <option value="link">Link preview</option>
+                    </select>
+                </div>
+
+                <div class="field" v-if="editor.message_type === 'text'">
+                    <label>Pesan</label>
+                    <textarea rows="3" v-model="editor.message"></textarea>
+                </div>
+                <template v-if="['image','video','file','audio'].includes(editor.message_type)">
+                    <div class="field"><label>Media URL</label><input v-model="editor.media_url" placeholder="https://..."></div>
+                    <div class="field" v-if="editor.message_type !== 'audio'"><label>Caption</label><input v-model="editor.caption"></div>
+                </template>
+                <template v-if="editor.message_type === 'location'">
+                    <div class="two fields">
+                        <div class="field"><label>Latitude</label><input v-model="editor.latitude"></div>
+                        <div class="field"><label>Longitude</label><input v-model="editor.longitude"></div>
+                    </div>
+                </template>
+                <template v-if="editor.message_type === 'link'">
+                    <div class="field"><label>Link URL</label><input v-model="editor.link_url"></div>
+                    <div class="field"><label>Caption</label><input v-model="editor.caption"></div>
+                </template>
+
+                <div class="ui horizontal divider">Pengulangan</div>
+
+                <div class="two fields">
+                    <div class="field required">
+                        <label>Tipe jadwal</label>
+                        <select class="ui dropdown" v-model="editor.schedule_type">
+                            <option value="once">Sekali (one-time reminder)</option>
+                            <option value="daily">Harian</option>
+                            <option value="weekly">Mingguan</option>
+                            <option value="monthly">Bulanan</option>
+                            <option value="yearly">Tahunan</option>
+                            <option value="cron">Cron expression (advanced)</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>Timezone</label>
+                        <input v-model="editor.timezone" placeholder="Asia/Jakarta">
+                    </div>
+                </div>
+
+                <div class="field" v-if="editor.schedule_type !== 'cron'">
+                    <label>{{ editor.schedule_type === 'once' ? 'Tanggal & jam pengiriman' : 'Tanggal & jam acuan (jam-menit dipakai untuk setiap pengulangan)' }}</label>
+                    <input type="datetime-local" v-model="editor.run_at">
+                </div>
+
+                <div class="field" v-if="editor.schedule_type === 'weekly'">
+                    <label>Hari (boleh pilih lebih dari satu)</label>
+                    <div class="day-pickers">
+                        <button type="button" v-for="(label, i) in weekdayLabels" :key="i"
+                                class="btn" :class="{active: weekdayPicked.includes(i)}"
+                                @click="toggleWeekday(i)">{{ label }}</button>
+                    </div>
+                </div>
+
+                <div class="field" v-if="editor.schedule_type === 'cron'">
+                    <label>Cron expression (5 field: <code>menit jam hari-bulan bulan hari-pekan</code>)</label>
+                    <input v-model="editor.cron_expr" placeholder="0 8 * * 1-5">
+                </div>
+
+                <div class="field">
+                    <button type="button" class="ui mini blue button" @click="previewSchedule"><i class="search icon"></i> Preview 5 jadwal berikutnya</button>
+                    <pre v-if="previewTimes.length" class="preview-list">{{ previewTimes.join('\n') }}</pre>
+                    <div v-if="previewError" class="ui red mini message" style="margin-top:8px">{{ previewError }}</div>
+                </div>
+
+                <div class="field">
+                    <div class="ui toggle checkbox">
+                        <input type="checkbox" v-model="editor.enabled">
+                        <label>Aktifkan jadwal</label>
+                    </div>
+                </div>
+            </form>
+        </div>
+        <div class="actions">
+            <div v-if="editorError" class="ui red message" style="text-align:left">{{ editorError }}</div>
+            <button class="ui cancel button">Batal</button>
+            <button class="ui green button" @click="saveSchedule"><i class="check icon"></i> Simpan</button>
+        </div>
+    </div>
+
+    <!-- ================== LOGS MODAL ================== -->
+    <div class="ui modal" id="logs-modal">
+        <i class="close icon"></i>
+        <div class="header">Log eksekusi: {{ logsFor && logsFor.name }}</div>
+        <div class="scrolling content">
+            <table class="ui celled compact table">
+                <thead><tr><th>Waktu</th><th>Status</th><th>Detail</th></tr></thead>
+                <tbody>
+                <tr v-if="!logEntries.length"><td colspan="3" style="text-align:center;color:#999">Belum ada log.</td></tr>
+                <tr v-for="l in logEntries" :key="l.id">
+                    <td><small>{{ formatTime(l.ran_at) }}</small></td>
+                    <td :class="l.status === 'success' ? 'log-success' : 'log-error'"><b>{{ l.status }}</b></td>
+                    <td><small>{{ l.error || (l.response && l.response.slice(0, 300)) || '' }}</small></td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="actions"><button class="ui cancel button">Tutup</button></div>
+    </div>
+</div>
+
+<script>
+const { createApp } = Vue;
+
+createApp({
+    data() {
+        return {
+            tab: 'devices',
+            upstreamUrl: '',
+            upstreamOk: true,
+            devices: [],
+            devicesLoading: false,
+            selectedDevice: localStorage.getItem('selectedDevice') || '',
+            schedules: [],
+            sendForm: this.freshSendForm(),
+            sending: false,
+            sendResult: null,
+            editor: this.freshEditor(),
+            editorError: '',
+            weekdayPicked: [],
+            weekdayLabels: ['Min','Sen','Sel','Rab','Kam','Jum','Sab'],
+            previewTimes: [],
+            previewError: '',
+            recentLogs: [],
+            logsFor: null,
+            logEntries: [],
+            addDevice: this.freshAddDeviceForm(),
+            loginFor: this.freshLoginState(),
+            loginPollTimer: null,
+            qrCountdownTimer: null,
+        };
+    },
+    watch: {
+        selectedDevice(v) {
+            localStorage.setItem('selectedDevice', v || '');
+            this.sendForm.device_id = v;
+            this.editor.device_id = v;
+        },
+    },
+    mounted() {
+        this.loadDevices();
+        this.loadSchedules();
+        this.loadRecentLogs();
+        // semantic dropdowns
+        this.$nextTick(() => $('.ui.dropdown').dropdown());
+    },
+    methods: {
+        freshSendForm() {
+            return { device_id: this.selectedDevice || '', recipient: '', message_type: 'text', message: '', media_url: '', caption: '', latitude: '', longitude: '', link_url: '' };
+        },
+        freshAddDeviceForm() {
+            return { name: '', method: 'qr', phone: '', loading: false, error: '' };
+        },
+        freshLoginState() {
+            return { device_id: '', status: 'idle', qr_link: '', qr_duration: 60, countdown: 60, pair_code: '', statusText: '', error: '' };
+        },
+        freshEditor() {
+            return { id: 0, name: '', device_id: this.selectedDevice || '', recipient: '', message_type: 'text', message: '', media_url: '', caption: '', latitude: '', longitude: '', link_url: '', schedule_type: 'once', run_at: '', cron_expr: '', timezone: 'Asia/Jakarta', enabled: true };
+        },
+        async loadDevices() {
+            this.devicesLoading = true;
+            try {
+                const r = await axios.get('/api/devices');
+                const env = r.data;
+                this.upstreamOk = true;
+                this.upstreamUrl = env.upstream_url || this.upstreamUrl;
+                const results = (env.results || env);
+                this.devices = Array.isArray(results) ? results : (results.data || []);
+            } catch (e) {
+                this.upstreamOk = false;
+                this.devices = [];
+                console.error(e);
+            } finally {
+                this.devicesLoading = false;
+            }
+        },
+        // --- Device management -----------------------------------------
+        openAddDevice() {
+            this.addDevice = this.freshAddDeviceForm();
+            this.$nextTick(() => {
+                $('#add-device-modal').modal({ closable: false }).modal('show');
+                $('#add-device-modal .ui.radio.checkbox').checkbox();
+            });
+        },
+        closeAddDevice() {
+            $('#add-device-modal').modal('hide');
+        },
+        async submitAddDevice() {
+            this.addDevice.error = '';
+            const name = (this.addDevice.name || '').trim();
+            if (!name) { this.addDevice.error = 'Nama device wajib diisi.'; return; }
+            if (!/^[A-Za-z0-9_\-]+$/.test(name)) { this.addDevice.error = 'Nama hanya boleh huruf, angka, underscore, dan strip.'; return; }
+            if (this.addDevice.method === 'code' && !/^\d{8,15}$/.test((this.addDevice.phone || '').trim())) {
+                this.addDevice.error = 'Nomor HP harus berupa angka 8–15 digit (dengan kode negara, tanpa +).';
+                return;
+            }
+            this.addDevice.loading = true;
+            try {
+                // 1) Create device on the core
+                await axios.post('/api/devices', { device_id: name });
+                // 2) Close add modal, open login modal
+                this.closeAddDevice();
+                await this.loadDevices();
+                this.selectedDevice = name;
+                if (this.addDevice.method === 'qr') {
+                    this.openLoginQR(name);
+                } else {
+                    this.openLoginCode(name, this.addDevice.phone.trim());
+                }
+            } catch (e) {
+                this.addDevice.error = (e.response && e.response.data && e.response.data.error) || e.message;
+            } finally {
+                this.addDevice.loading = false;
+            }
+        },
+        async openLoginQR(deviceId) {
+            this.loginFor = this.freshLoginState();
+            this.loginFor.device_id = deviceId;
+            this.loginFor.status = 'loading';
+            this.$nextTick(() => $('#qr-modal').modal({ closable: false }).modal('show'));
+            await this.fetchQR(deviceId);
+            this.startPollingStatus(deviceId);
+        },
+        async openLoginCode(deviceId, phone) {
+            this.loginFor = this.freshLoginState();
+            this.loginFor.device_id = deviceId;
+            this.loginFor.status = 'loading';
+            this.$nextTick(() => $('#qr-modal').modal({ closable: false }).modal('show'));
+            try {
+                const r = await axios.get('/api/devices/' + encodeURIComponent(deviceId) + '/login-code', { params: { phone } });
+                const res = r.data.results || {};
+                this.loginFor.pair_code = res.pair_code || res.code || '';
+                this.loginFor.status = 'code';
+                this.loginFor.statusText = 'menunggu pairing...';
+                this.startPollingStatus(deviceId);
+            } catch (e) {
+                this.loginFor.status = 'error';
+                this.loginFor.error = (e.response && e.response.data && e.response.data.error) || e.message;
+            }
+        },
+        async fetchQR(deviceId) {
+            try {
+                const r = await axios.get('/api/devices/' + encodeURIComponent(deviceId) + '/login');
+                const res = r.data.results || {};
+                // qr_link already rewritten by backend to /api/qr/<filename>
+                this.loginFor.qr_link = res.qr_link || '';
+                this.loginFor.qr_duration = parseInt(res.qr_duration, 10) || 60;
+                this.loginFor.countdown = this.loginFor.qr_duration;
+                this.loginFor.status = 'qr';
+                this.loginFor.statusText = 'menunggu scan...';
+                this.startQRCountdown(deviceId);
+            } catch (e) {
+                this.loginFor.status = 'error';
+                this.loginFor.error = (e.response && e.response.data && e.response.data.error) || e.message;
+            }
+        },
+        startQRCountdown(deviceId) {
+            if (this.qrCountdownTimer) clearInterval(this.qrCountdownTimer);
+            this.qrCountdownTimer = setInterval(() => {
+                if (this.loginFor.status !== 'qr') { clearInterval(this.qrCountdownTimer); return; }
+                this.loginFor.countdown -= 1;
+                if (this.loginFor.countdown <= 0) {
+                    clearInterval(this.qrCountdownTimer);
+                    // QR expired -> request a new one
+                    this.fetchQR(deviceId);
+                }
+            }, 1000);
+        },
+        startPollingStatus(deviceId) {
+            if (this.loginPollTimer) clearInterval(this.loginPollTimer);
+            this.loginPollTimer = setInterval(async () => {
+                try {
+                    const r = await axios.get('/api/devices/' + encodeURIComponent(deviceId) + '/status');
+                    const res = r.data.results || {};
+                    if (res.is_logged_in) {
+                        clearInterval(this.loginPollTimer);
+                        if (this.qrCountdownTimer) clearInterval(this.qrCountdownTimer);
+                        this.loginFor.status = 'success';
+                        this.loginFor.statusText = 'logged in';
+                        await this.loadDevices();
+                    } else if (res.is_connected) {
+                        this.loginFor.statusText = 'connected, menunggu login...';
+                    }
+                } catch (e) { /* abaikan, lanjut polling */ }
+            }, 2000);
+        },
+        closeLoginModal() {
+            if (this.loginPollTimer) clearInterval(this.loginPollTimer);
+            if (this.qrCountdownTimer) clearInterval(this.qrCountdownTimer);
+            $('#qr-modal').modal('hide');
+            this.loadDevices();
+        },
+        restartLogin() {
+            const id = this.loginFor.device_id;
+            this.openLoginQR(id);
+        },
+        async doLogout(deviceId) {
+            if (!confirm('Logout device "' + deviceId + '" ? Anda harus scan QR lagi untuk pakai.')) return;
+            try {
+                await axios.post('/api/devices/' + encodeURIComponent(deviceId) + '/logout');
+                this.loadDevices();
+            } catch (e) {
+                alert((e.response && e.response.data && e.response.data.error) || e.message);
+            }
+        },
+        async doReconnect(deviceId) {
+            try {
+                await axios.post('/api/devices/' + encodeURIComponent(deviceId) + '/reconnect');
+                setTimeout(() => this.loadDevices(), 800);
+            } catch (e) {
+                alert((e.response && e.response.data && e.response.data.error) || e.message);
+            }
+        },
+        async doDeleteDevice(deviceId) {
+            if (!confirm('Hapus device "' + deviceId + '" beserta session-nya? Tidak bisa di-undo.')) return;
+            try {
+                await axios.delete('/api/devices/' + encodeURIComponent(deviceId));
+                if (this.selectedDevice === deviceId) this.selectedDevice = '';
+                this.loadDevices();
+            } catch (e) {
+                alert((e.response && e.response.data && e.response.data.error) || e.message);
+            }
+        },
+
+        async loadSchedules() {
+            const r = await axios.get('/api/schedules');
+            this.schedules = r.data.results || [];
+        },
+        async loadRecentLogs() {
+            const r = await axios.get('/api/logs');
+            this.recentLogs = r.data.results || [];
+        },
+        async doSendNow() {
+            this.sending = true; this.sendResult = null;
+            try {
+                const r = await axios.post('/api/send', this.sendForm);
+                this.sendResult = { ok: true, text: JSON.stringify(r.data, null, 2) };
+            } catch (e) {
+                this.sendResult = { ok: false, text: (e.response && JSON.stringify(e.response.data, null, 2)) || e.message };
+            } finally { this.sending = false; }
+        },
+        openScheduleEditor(s) {
+            this.editor = s ? this.scheduleToEditor(s) : this.freshEditor();
+            this.editorError = '';
+            this.previewTimes = []; this.previewError = '';
+            this.weekdayPicked = (s && s.schedule_type === 'weekly' && s.cron_expr) ? s.cron_expr.split(',').map(x => parseInt(x, 10)).filter(n => !isNaN(n)) : [];
+            this.$nextTick(() => {
+                $('#schedule-modal').modal({ closable: false }).modal('show');
+                $('#schedule-modal .ui.dropdown').dropdown();
+            });
+        },
+        scheduleToEditor(s) {
+            return {
+                id: s.id, name: s.name, device_id: s.device_id, recipient: s.recipient,
+                message_type: s.message_type, message: s.message, media_url: s.media_url,
+                caption: s.caption, latitude: s.latitude, longitude: s.longitude,
+                link_url: s.link_url, schedule_type: s.schedule_type,
+                run_at: s.run_at ? this.toDatetimeLocal(s.run_at, s.timezone) : '',
+                cron_expr: s.cron_expr, timezone: s.timezone || 'Asia/Jakarta',
+                enabled: s.enabled,
+            };
+        },
+        toDatetimeLocal(iso, tz) {
+            // Render UTC timestamp into the schedule's tz as YYYY-MM-DDTHH:mm
+            try {
+                const d = new Date(iso);
+                const opts = { timeZone: tz && tz !== 'Local' ? tz : undefined, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false };
+                const parts = new Intl.DateTimeFormat('en-CA', opts).formatToParts(d);
+                const get = (k) => parts.find(p => p.type === k).value;
+                return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}`;
+            } catch (e) { return iso ? iso.slice(0, 16) : ''; }
+        },
+        toggleWeekday(i) {
+            const idx = this.weekdayPicked.indexOf(i);
+            if (idx >= 0) this.weekdayPicked.splice(idx, 1); else this.weekdayPicked.push(i);
+            this.weekdayPicked.sort();
+        },
+        editorPayload() {
+            const p = { ...this.editor };
+            if (p.schedule_type === 'weekly') {
+                p.cron_expr = this.weekdayPicked.length ? this.weekdayPicked.join(',') : '';
+            }
+            // server expects RFC-ish; the datetime-local value already matches "2006-01-02T15:04"
+            return p;
+        },
+        async previewSchedule() {
+            this.previewError = ''; this.previewTimes = [];
+            try {
+                const r = await axios.post('/api/schedules/preview?count=5', this.editorPayload());
+                this.previewTimes = r.data.results || [];
+            } catch (e) {
+                this.previewError = (e.response && e.response.data && e.response.data.error) || e.message;
+            }
+        },
+        async saveSchedule() {
+            this.editorError = '';
+            try {
+                const payload = this.editorPayload();
+                if (this.editor.id) {
+                    await axios.put('/api/schedules/' + this.editor.id, payload);
+                } else {
+                    await axios.post('/api/schedules', payload);
+                }
+                $('#schedule-modal').modal('hide');
+                this.loadSchedules();
+            } catch (e) {
+                this.editorError = (e.response && e.response.data && e.response.data.error) || e.message;
+            }
+        },
+        async toggleSchedule(s) {
+            await axios.post('/api/schedules/' + s.id + '/toggle');
+            this.loadSchedules();
+        },
+        async runScheduleNow(s) {
+            await axios.post('/api/schedules/' + s.id + '/run');
+            setTimeout(() => { this.loadSchedules(); this.loadRecentLogs(); }, 700);
+        },
+        async deleteSchedule(s) {
+            if (!confirm('Hapus jadwal "' + s.name + '" ?')) return;
+            await axios.delete('/api/schedules/' + s.id);
+            this.loadSchedules();
+        },
+        async openLogs(s) {
+            this.logsFor = s;
+            const r = await axios.get('/api/schedules/' + s.id + '/logs?limit=100');
+            this.logEntries = r.data.results || [];
+            this.$nextTick(() => $('#logs-modal').modal('show'));
+        },
+        formatScheduleType(s) {
+            const t = s.schedule_type;
+            if (t === 'once') return 'Sekali';
+            if (t === 'daily') return 'Setiap hari';
+            if (t === 'weekly') return 'Mingguan' + (s.cron_expr ? ' (' + s.cron_expr.split(',').map(i => this.weekdayLabels[parseInt(i, 10)] || i).join(',') + ')' : '');
+            if (t === 'monthly') return 'Bulanan';
+            if (t === 'yearly') return 'Tahunan';
+            if (t === 'cron') return 'Cron: ' + s.cron_expr;
+            return t;
+        },
+        formatTime(iso) {
+            if (!iso) return '—';
+            try { return new Date(iso).toLocaleString('id-ID', { hour12: false }); }
+            catch (e) { return iso; }
+        },
+    },
+}).mount('#app');
+</script>
+</body>
+</html>

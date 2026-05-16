@@ -1,0 +1,56 @@
+# Compose lengkap: core (WhatsApp engine) + dashboard.
+# File ini SENGAJA dipisah dari docker-compose.yml asli supaya
+# update versi core tidak menimbulkan konflik merge.
+#
+# Pakai: docker compose -f docker-compose.full.yml up -d --build
+
+services:
+  whatsapp_go:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "10"
+    build:
+      context: .
+      dockerfile: ./docker/golang.Dockerfile
+    restart: "on-failure"
+    ports:
+      - "3000:3000"
+    env_file:
+      - path: src/.env
+        required: false
+    volumes:
+      - ./storages:/app/storages
+      - ./statics:/app/statics
+    networks:
+      - gowa_net
+
+  dashboard:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "10"
+    build:
+      context: .
+      dockerfile: ./dashboard/Dockerfile
+    restart: "on-failure"
+    ports:
+      - "8088:8088"
+    env_file:
+      - path: dashboard/.env
+        required: false
+    environment:
+      # Wajib pakai service name (bukan localhost) di dalam Docker network.
+      WHATSAPP_API_URL: http://whatsapp_go:3000
+    depends_on:
+      - whatsapp_go
+    volumes:
+      - ./dashboard/data:/data
+    networks:
+      - gowa_net
+
+networks:
+  gowa_net:
+    driver: bridge
