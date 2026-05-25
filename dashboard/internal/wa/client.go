@@ -68,12 +68,21 @@ func (c *Client) do(req *http.Request, deviceID string) (*Response, error) {
 	return &env, nil
 }
 
-// ListDevices proxies GET /app/devices. Core's device middleware requires
-// X-Device-Id once there are 2+ devices (single-device mode auto-picks).
-// Forward whatever the caller passes so the dashboard can use its
-// currently-selected device as the auth context.
+// ListDevices proxies GET /devices (NOT /app/devices). Bedanya:
+//
+//	/app/devices  → [{name, device}]                    (cuma 2 field, ambigu)
+//	/devices      → [{id, jid, state, phone_number,
+//	                  display_name, created_at}]        (rich, includes state)
+//
+// State field penting untuk UI badge "Connected/Disconnected" yang akurat —
+// sebelumnya pakai is_connected/is_logged_in yang tidak ada di /app/devices,
+// jadi UI selalu render fallback negatif (badge selalu merah).
+//
+// Core's device middleware requires X-Device-Id once there are 2+ devices
+// (single-device mode auto-picks). Forward whatever the caller passes so
+// the dashboard can use its currently-selected device as the auth context.
 func (c *Client) ListDevices(deviceID string) (*Response, error) {
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/app/devices", nil)
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/devices", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -395,6 +404,36 @@ func (c *Client) SetAIChatEnabled(deviceID, chatJID string, enabled bool) (*Resp
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	return c.do(req, deviceID)
+}
+
+// PauseAIReply — global pause. minutes <= 0 = indefinite (until restart).
+func (c *Client) PauseAIReply(deviceID string, minutes int) (*Response, error) {
+	body, err := json.Marshal(map[string]int{"minutes": minutes})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/aireply/pause", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return c.do(req, deviceID)
+}
+
+func (c *Client) ResumeAIReply(deviceID string) (*Response, error) {
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/aireply/resume", nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.do(req, deviceID)
+}
+
+func (c *Client) GetAIPauseStatus(deviceID string) (*Response, error) {
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/aireply/pause-status", nil)
+	if err != nil {
+		return nil, err
+	}
 	return c.do(req, deviceID)
 }
 

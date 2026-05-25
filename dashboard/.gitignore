@@ -2,6 +2,7 @@
 *.db
 *.db-shm
 *.db-wal
+*.zip
 whatsapp-dashboard
 whatsapp-dashboard.exe
 /tmp/

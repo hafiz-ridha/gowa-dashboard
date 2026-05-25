@@ -1,0 +1,63 @@
+# Contoh konfigurasi reverse proxy nginx untuk gowa-dashboard di aaPanel.
+#
+# PAKAI INI KALAU:
+#   - "Tambah Device" return 404 / "Cannot POST"
+#   - Browser error "Cannot use import statement outside a module"
+#   - GET /api/_health jalan tapi POST /api/devices gagal
+#
+# DUA BUG aaPanel UI "Add Reverse Proxy" yang sering bikin gini:
+#
+#   1. proxy_pass http://127.0.0.1:18088/;
+#      ^ trailing slash di akhir -> nginx me-rewrite URI sehingga
+#        path "/api/devices" jadi kosong di upstream.
+#
+#   2. proxy_set_header Host http://127.0.0.1:18088;
+#      ^ aaPanel naruh TARGET URL sebagai nilai Host header, padahal
+#        Host harusnya hostname dari klien ($host). Akibatnya fasthttp
+#        (engine Fiber dashboard) parsing request URL secara aneh
+#        karena Host malformed, dan path-nya jadi kosong.
+#
+# Cuma satu dari dua sudah cukup bikin gagal. Config di bawah benerin
+# dua-duanya sekaligus.
+#
+# CARA PAKAI:
+#   1. Di aaPanel -> Website -> klik domain Anda -> tab "Config file"
+#   2. Cari blok "location /" atau "location ^~ /" yang punya proxy_pass
+#   3. Replace seluruh blok itu dengan blok di bawah ini
+#   4. Save, lalu klik "Reload Nginx"
+#   5. Verifikasi: curl -i -X POST https://DOMAIN-ANDA/api/_health
+#      Harus return 401 (auth) atau 200 (JSON) - JANGAN 404
+#
+# ATAU jalankan auto-installer (lebih cepat, bypass aaPanel UI):
+#   sudo sh scripts/aapanel-install-nginx.sh gowa.namadomainsaya.com
+#
+# Catatan: jangan ubah blok SSL / location ~ \.well-known dan blok lain
+# yang aaPanel generate otomatis. Cuma replace blok proxy-nya saja.
+
+location ^~ /
+{
+    # PENTING: TANPA trailing slash di akhir URL. Dengan slash, nginx
+    # me-rewrite URI sehingga path "/api/devices" jadi "/" di upstream,
+    # yang bikin Fiber routing miss dan return "Cannot POST ".
+    proxy_pass http://127.0.0.1:18088;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header REMOTE-HOST       $remote_addr;
+    proxy_set_header Upgrade           $http_upgrade;
+    proxy_set_header Connection        $connection_upgrade;
+
+    # Naikkan kalau pengen upload KB file besar (default AI_MAX_KB_FILE_SIZE=10MB)
+    client_max_body_size 50m;
+
+    # Timeout panjang utk Login QR yang nunggu pairing
+    proxy_read_timeout   300s;
+    proxy_send_timeout   300s;
+    proxy_connect_timeout 30s;
+
+    # Disable buffering biar QR PNG & SSE-style response (kalau ada) cepat sampai
+    proxy_buffering off;
+}

@@ -57,13 +57,27 @@ func (s *Service) HandleIncoming(ctx context.Context, deviceID, chatJID, senderJ
 		return false
 	}
 
+	// Global pause: claim ownership to suppress BOTH AI and static auto-reply.
+	// Useful for temporary silence (mis. user sedang meeting / liburan).
+	if IsPaused() {
+		return true
+	}
+
 	setting, err := s.Repo.GetChatSetting(ctx, deviceID, chatJID)
 	if err != nil {
 		logrus.Warnf("ai-reply: get chat setting: %v", err)
 		return false
 	}
-	if setting == nil || !setting.Enabled {
+	if setting == nil {
+		// No opt-in row — let static WHATSAPP_AUTO_REPLY (if configured) fire.
 		return false
+	}
+	if !setting.Enabled {
+		// Explicit opt-out: user added a chat-toggle row and turned it OFF.
+		// Treat as "deliberately swallowed" so the static auto-reply doesn't
+		// fire either — otherwise disabling AI for a chat would silently
+		// fall back to "Auto reply message", confusing user intent.
+		return true
 	}
 
 	if !s.RateLimiter.Allow(deviceID + "|" + chatJID) {

@@ -7,8 +7,10 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/dashboard/internal/api"
+	"github.com/aldinokemal/go-whatsapp-web-multidevice/dashboard/internal/broadcast"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/dashboard/internal/config"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/dashboard/internal/scheduler"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/dashboard/internal/store"
@@ -39,6 +41,23 @@ func main() {
 		log.Fatalf("[main] start scheduler: %v", err)
 	}
 
+	bcaster := broadcast.New(st, wac)
+	// Broadcast yg statusnya "running" di DB itu pasti dari proses sebelumnya
+	// yg crash/restart (worker state in-memory hilang). Tandai cancelled
+	// supaya UI tidak misleading. User bisa create broadcast baru kalau perlu.
+	if err := bcaster.Resume(); err != nil {
+		log.Printf("[main] resume broadcasts: %v", err)
+	}
+
+	// Cleanup ticker — hapus log lama supaya dashboard.db tidak terus membesar.
+	// Aman di-skip kalau LogRetentionDays <= 0 (user matiin fitur).
+	if cfg.LogRetentionDays > 0 {
+		go startCleanupLoop(st, cfg.LogRetentionDays, cfg.CleanupIntervalHours)
+		log.Printf("[main] log retention enabled: %d days, cleanup every %d hour(s)", cfg.LogRetentionDays, cfg.CleanupIntervalHours)
+	} else {
+		log.Printf("[main] log retention disabled (DASHBOARD_LOG_RETENTION_DAYS=0)")
+	}
+
 	app := fiber.New(fiber.Config{
 		AppName:               "WhatsApp Dashboard",
 		DisableStartupMessage: false,
@@ -64,7 +83,14 @@ func main() {
 	}
 
 	// API
-	h := &api.Handlers{Store: st, WA: wac, Scheduler: sched, DefaultTZ: cfg.DefaultTimezone}
+	h := &api.Handlers{
+		Store:            st,
+		WA:               wac,
+		Scheduler:        sched,
+		Broadcaster:      bcaster,
+		DefaultTZ:        cfg.DefaultTimezone,
+		LogRetentionDays: cfg.LogRetentionDays,
+	}
 	h.Register(app)
 
 	// Static UI -- the HTML is embedded in the binary via go:embed.
@@ -91,6 +117,40 @@ func main() {
 	log.Printf("[main] proxying to WhatsApp API at %s", cfg.WhatsAppBaseURL)
 	if err := app.Listen(addr); err != nil {
 		log.Fatalf("[main] listen: %v", err)
+	}
+}
+
+// startCleanupLoop runs di goroutine: jalankan cleanup sekali setelah 1
+// menit (supaya tidak block startup) lalu setiap intervalHours.
+func startCleanupLoop(st *store.Store, retentionDays, intervalHours int) {
+	time.Sleep(1 * time.Minute)
+	for {
+		runCleanupOnce(st, retentionDays)
+		time.Sleep(time.Duration(intervalHours) * time.Hour)
+	}
+}
+
+func runCleanupOnce(st *store.Store, retentionDays int) {
+	stats, err := st.CleanupOldLogs(retentionDays)
+	if err != nil {
+		log.Printf("[cleanup] error: %v", err)
+		return
+	}
+	total := stats.DeletedScheduleLogs + stats.DeletedBroadcasts + stats.DeletedBroadcastRecipients
+	if total == 0 {
+		log.Printf("[cleanup] nothing to delete (cutoff: %s)", stats.CutoffUTC.Format(time.RFC3339))
+		return
+	}
+	log.Printf("[cleanup] deleted %d schedule_logs + %d broadcasts + %d broadcast_recipients (cutoff: %s)",
+		stats.DeletedScheduleLogs, stats.DeletedBroadcasts, stats.DeletedBroadcastRecipients,
+		stats.CutoffUTC.Format(time.RFC3339))
+	// Reclaim disk space lewat VACUUM kalau penghapusan signifikan
+	if total > 500 {
+		if err := st.VacuumIfNeeded(); err != nil {
+			log.Printf("[cleanup] vacuum failed (non-fatal): %v", err)
+		} else {
+			log.Printf("[cleanup] vacuum done")
+		}
 	}
 }
 

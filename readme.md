@@ -51,15 +51,16 @@ Lihat [`how-to-use.md`](./how-to-use.md) untuk dokumentasi lengkap upstream. Rin
 
 ### Dashboard (`dashboard/`)
 
-UI web (Vue 3 + Semantic UI, di-embed via `go:embed`) dengan lima tab:
+UI web (Vue 3 + Semantic UI, di-embed via `go:embed`) dengan enam tab:
 
 | Tab                  | Fungsi                                                                                                          |
 |----------------------|-----------------------------------------------------------------------------------------------------------------|
 | **Devices**          | List device upstream, tambah device baru, login QR (di-proxy melalui dashboard — core tidak perlu publik), login via kode telepon, logout, reconnect, hapus device. |
 | **Kirim Sekarang**   | Form kirim instan: text, image, video, file, audio, location, link. Pilih device & tujuan (nomor / JID grup).   |
 | **Jadwal & Reminder**| CRUD jadwal: enable/disable, preview 5 fire-time berikutnya, tombol "Run Now" untuk uji manual, kolom next-run. |
+| **Broadcast**        | Kirim ke banyak nomor sekaligus (paste comma/newline/space-separated, auto-normalize 08xxx → 62xxx). Anti-spam: random delay (min/max), batch break tiap N pesan, shuffle order, spintax `{a\|b\|c}` untuk variasi pesan. Live progress + cancel button + per-recipient log. |
 | **Riwayat**          | Log eksekusi global + per-jadwal (status sukses/error, response upstream, pesan error).                          |
-| **AI Reply**         | 4 sub-section yang nge-proxy ke core: **Config** (provider/model/prompt style/API key dengan masked-key indicator + test connection), **Knowledgebase** (upload PDF/DOCX/TXT/MD + list + reindex + delete), **Chat Toggle** (opt-in per chat JID, auto-format nomor `08xxx`/`62xxx` → `@s.whatsapp.net`), **Logs** (audit eksekusi dengan filter chat/status). Setting tersimpan di core (per-device, encrypted at rest). |
+| **AI Reply**         | 4 sub-section yang nge-proxy ke core: **Config** (provider/model/prompt style/API key dengan masked-key indicator + test connection + **toggle "Apply ke semua device terhubung"** untuk fan-out config ke seluruh nomor logged-in), **Knowledgebase** (upload PDF/DOCX/TXT/MD + list + reindex + delete), **Chat Toggle** (opt-in per chat JID, auto-format nomor `08xxx`/`62xxx` → `@s.whatsapp.net`, **toggle apply-to-all** untuk enable AI di chat yg sama di seluruh device), **Logs** (audit eksekusi dengan filter chat/status). Setting tersimpan di core (per-device, encrypted at rest). |
 
 Kemampuan inti dashboard:
 
@@ -67,10 +68,22 @@ Kemampuan inti dashboard:
 - **Timezone-aware** — tiap jadwal punya zona waktu sendiri (default dari `DASHBOARD_TZ`, mis. `Asia/Jakarta`).
 - **Persisten** — SQLite pure-Go (`modernc.org/sqlite`), tidak butuh CGO, binary statis kecil.
 - **One-shot survive restart** — schedule type `once` yang terlewat saat downtime tetap di-fire setelah dashboard start ulang (status "missed run").
+- **Broadcast dengan anti-spam** — kirim ke banyak nomor dengan random delay (default 8-25 detik), batch break tiap N pesan, shuffle order, dan spintax `{a|b|c}` untuk varian otomatis. Worker async — boleh tutup browser, broadcast tetap jalan. Live progress + per-recipient log + cancel button.
+- **Auto-delete logs** — worker background hapus `schedule_logs` & broadcasts selesai yang lebih lama dari `DASHBOARD_LOG_RETENTION_DAYS` (default 30 hari) tiap `DASHBOARD_CLEANUP_INTERVAL_HOURS` (default 6 jam). UI di tab Riwayat juga punya tombol "Cleanup Sekarang" + retention override manual.
+- **API Core status badge** — pill berwarna di kanan atas dashboard auto-poll core tiap 30 detik. State: **API Core Connected** (hijau + latency ms), **Mengecek API Core...** (grey), **API Core Disconnected** (merah + error tooltip). Klik untuk re-check.
 - **QR proxy** — endpoint `/api/qr/:filename` mem-fetch PNG QR dari core, sehingga browser tidak perlu akses langsung ke port core (cocok di belakang reverse proxy / private network).
 - **Basic auth opsional** terpisah dari upstream (`DASHBOARD_BASIC_AUTH=user:pass`).
-- **Health probe** `/api/_health` untuk verifikasi build/version + cek konektivitas upstream.
+- **Health probe** `/api/_health` (info build/route) + `/api/_health/upstream` (live ping core).
 - **Tidak menyentuh `src/`** — semua state dashboard di `dashboard/data/dashboard.db`, upgrade core cukup `git pull` upstream.
+
+### Helper scripts untuk deployment aaPanel
+
+Dua script di [`scripts/`](./scripts/) yang otomatis benerin problem umum:
+
+- **[`scripts/aapanel-install-nginx.sh`](./scripts/aapanel-install-nginx.sh)** — install/replace blok `location` di nginx vhost aaPanel dengan config yang sudah dijamin benar (tanpa trailing-slash bug + `Host $host` benar). Sekali jalan, backup otomatis, dengan rollback kalau syntax error. Pakai: `sudo sh scripts/aapanel-install-nginx.sh DOMAIN`.
+- **[`scripts/aapanel-check.sh`](./scripts/aapanel-check.sh)** — verifikasi end-to-end (container running → dashboard sehat di port 18088 → GET & POST via public URL → AI Reply enabled). Output berwarna dengan instruksi fix yang spesifik kalau ada yang gagal. Pakai: `sh scripts/aapanel-check.sh https://DOMAIN [AUTH=user:pass]`.
+
+Dokumentasi nginx detail: [`docs/aapanel-nginx.conf.example`](./docs/aapanel-nginx.conf.example).
 
 ---
 
@@ -185,6 +198,8 @@ Prioritas: **CLI flag > environment variable > `.env`**.
 | `WHATSAPP_API_URL`      | `http://localhost:3000`  | URL core REST API (di Docker: `http://whatsapp_go:3000`).                 |
 | `WHATSAPP_API_USER`     | (kosong)                 | Basic auth user untuk core (jika `APP_BASIC_AUTH` di core diaktifkan).    |
 | `WHATSAPP_API_PASSWORD` | (kosong)                 | Basic auth password untuk core.                                            |
+| `DASHBOARD_LOG_RETENTION_DAYS` | `30`              | Auto-cleanup: hapus `schedule_logs` & broadcasts selesai yang > N hari. `0` = nonaktif. |
+| `DASHBOARD_CLEANUP_INTERVAL_HOURS` | `6`           | Interval worker cleanup (jam). Min 1. Default 6 jam.                      |
 
 ### Core (`src/.env`)
 
@@ -221,7 +236,10 @@ Semua di-prefix `/api`. Endpoint device adalah proxy ke core (otomatis menyisipk
 
 | Method   | Path                          | Keterangan                                                  |
 |----------|-------------------------------|-------------------------------------------------------------|
-| `GET`    | `/api/_health`                | Probe versi build + URL upstream.                            |
+| `GET`    | `/api/_health`                | Probe versi build + URL upstream + list endpoint.            |
+| `GET`    | `/api/_health/upstream`       | Live ping ke core. Return `{ok, latency_ms, checked_at, upstream_url}`. UI pakai utk badge **API Core Connected**. |
+| `GET`    | `/api/_stats`                 | Row counts per tabel + retention config (untuk admin/maintenance UI).   |
+| `POST`   | `/api/_cleanup`               | Trigger cleanup manual. Query: `?days=N` override retention. Return `{deleted_*}` per tabel. |
 | `GET`    | `/api/devices`                | List semua device.                                           |
 | `POST`   | `/api/devices`                | Buat device baru. Body: `{"device_id":"alias"}`.             |
 | `DELETE` | `/api/devices/:id`            | Hapus device.                                                |
@@ -232,6 +250,13 @@ Semua di-prefix `/api`. Endpoint device adalah proxy ke core (otomatis menyisipk
 | `POST`   | `/api/devices/:id/reconnect`  | Reconnect socket.                                            |
 | `GET`    | `/api/qr/:filename`           | Proxy gambar QR PNG dari core.                               |
 | `POST`   | `/api/send`                   | Kirim pesan sekarang (text/image/video/file/audio/location/link). |
+| `GET`    | `/api/broadcast`              | List broadcast (terbaru di atas).                            |
+| `POST`   | `/api/broadcast`              | Buat & start broadcast. Body wajib `device_id`, `recipients` (raw string), `message_type`, `message`. Opsional: `delay_min_ms` (min 3000), `delay_max_ms`, `batch_size`, `batch_pause_min_ms`, `batch_pause_max_ms`, `shuffle_order`, `start_now`. |
+| `POST`   | `/api/broadcast/preview`      | Parse `recipients` string → return `{valid_count, valid[], invalid_count, invalid[]}` (untuk live preview di UI). |
+| `GET`    | `/api/broadcast/:id`          | Detail broadcast + flag `running`.                            |
+| `GET`    | `/api/broadcast/:id/recipients` | List per-recipient log. Query: `?status=pending\|sent\|failed`. |
+| `POST`   | `/api/broadcast/:id/cancel`   | Hentikan broadcast yang sedang running (worker stop at next iter). |
+| `DELETE` | `/api/broadcast/:id`          | Hapus broadcast (gagal kalau masih running, cancel dulu).     |
 | `GET`    | `/api/schedules`              | List jadwal.                                                 |
 | `POST`   | `/api/schedules`              | Buat jadwal.                                                 |
 | `GET`    | `/api/schedules/:id`          | Detail jadwal.                                               |
@@ -252,6 +277,12 @@ Semua di-prefix `/api`. Endpoint device adalah proxy ke core (otomatis menyisipk
 | `GET`    | `/api/aireply/chat-settings`  | List chat opt-in per-device.                                  |
 | `PUT`    | `/api/aireply/chat-settings/:chat_jid` | Toggle AI on/off untuk satu chat. Body `{"enabled":bool}`. |
 | `GET`    | `/api/aireply/logs`           | Audit log eksekusi AI. Query: `?chat_jid=&status=&limit=50`.  |
+| `POST`   | `/api/aireply/config/apply-to-all` | Fan-out: simpan config AI **dan** replikasi chat-toggles ke semua device logged_in. Query `?with_chats=false` untuk skip chat replication (default true). Body sama dengan PUT `/aireply/config`. Return `{success_count, total, results[], chat_sync{source_chats,target_devices,applied_ok,applied_fail,errors}}`. **Penting**: tanpa replikasi chat-toggle, device kedua punya config tapi tidak balas otomatis. |
+| `POST`   | `/api/aireply/chat-settings/:chat_jid/apply-to-all` | Fan-out: enable/disable toggle AI untuk satu chat JID di seluruh device. Body `{"enabled":bool}`. Berguna untuk customer multi-channel. |
+| `GET`    | `/api/aireply/multi-device-health` | Audit per-device readiness: `has_config`, `has_api_key`, `chat_enabled_count`, `status` (ready/no_config/no_api_key/no_chats), `hint`. Pakai untuk diagnose kenapa device tertentu tidak balas auto. |
+| `POST`   | `/api/aireply/pause` | Pause global AI Reply (semua device + semua chat). Body: `{"minutes": N}`. N ≤ 0 = indefinite (sampai resume manual atau container restart). Saat paused, AI dan static auto-reply dua-duanya skip. State in-memory di core. |
+| `POST`   | `/api/aireply/resume` | Cabut pause, AI Reply kembali aktif. |
+| `GET`    | `/api/aireply/pause-status` | `{paused, paused_until, remaining_seconds}`. Dashboard SPA poll setiap 30 detik saat tab AI Reply terbuka. |
 
 Contoh payload `POST /api/schedules`:
 
@@ -298,7 +329,7 @@ Tipe pesan yang valid: `text`, `image`, `video`, `file`, `audio`, `location`, `l
 - **FFmpeg + libwebp** diperlukan oleh core untuk konversi media & sticker. Image Docker bawaan sudah menyertakan keduanya.
 - **Database**: core default `storages/whatsapp.db` (SQLite); set `DB_URI=postgres://...` untuk PostgreSQL. Dashboard selalu pakai SQLite pure-Go lokal — tidak ada CGO, binary jalan di Alpine tanpa libc tambahan.
 - **Webhook payload v8+** menyertakan `device_id` top-level (lihat [`docs/webhook-payload.md`](./docs/webhook-payload.md)).
-- **AI Encryption Key**: kalau pakai AI Reply, `AI_ENCRYPTION_KEY` di `src/.env` adalah satu-satunya cara men-decrypt API key provider yang tersimpan di SQLite. **Backup terpisah** (mis. password manager). Kalau hilang/berubah, semua API key tersimpan jadi unreadable dan harus di-input ulang via UI. Untuk dokumentasi lengkap fitur AI Reply lihat [`docs/PRD-ai-auto-reply.md`](./docs/PRD-ai-auto-reply.md).
+- **AI Reply auto-enable di Docker**: entrypoint core ([`docker/entrypoint.sh`](./docker/entrypoint.sh)) default `AI_REPLY_ENABLED=true` dan **auto-generate `AI_ENCRYPTION_KEY`** kalau kosong, lalu simpan di `storages/.ai-encryption-key` (persisten lewat volume). Jadi tab AI Reply di dashboard langsung jalan tanpa konfigurasi tambahan. **Backup file `storages/.ai-encryption-key` terpisah** (mis. password manager) — kehilangan file ini = semua API key provider tersimpan jadi unreadable. Untuk matikan fitur, set `AI_REPLY_ENABLED=false` di `src/.env`. Dokumentasi lengkap: [`docs/PRD-ai-auto-reply.md`](./docs/PRD-ai-auto-reply.md).
 - **Cache**: dashboard mengembalikan `Cache-Control: no-store` untuk seluruh static asset, supaya UI selalu pakai versi terbaru setelah rebuild Docker image.
 
 ---

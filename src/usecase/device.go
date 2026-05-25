@@ -56,12 +56,15 @@ func (s *serviceDevice) AddDevice(ctx context.Context, deviceID string) (*domain
 	return &device, nil
 }
 
-func (s *serviceDevice) RemoveDevice(_ context.Context, deviceID string) error {
+func (s *serviceDevice) RemoveDevice(ctx context.Context, deviceID string) error {
 	if s.manager == nil {
 		return fmt.Errorf("device manager not initialized")
 	}
-	s.manager.RemoveDevice(deviceID)
-	return nil
+	// Full purge: logout WA session + disconnect client + hapus chatstorage
+	// + delete device record. Sebelumnya cuma `RemoveDevice` (unmap) yang
+	// meninggalkan orphan data — user dashboard expect tombol Hapus = total
+	// cleanup, jadi pakai PurgeDevice yang sudah ada di manager.
+	return s.manager.PurgeDevice(ctx, deviceID)
 }
 
 func (s *serviceDevice) LoginDevice(_ context.Context, _ string) error {

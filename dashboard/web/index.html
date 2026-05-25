@@ -33,6 +33,25 @@
         .log-success { color: #2e7d32; }
         .log-error { color: #c62828; }
         .nav-tabs { margin-bottom: 16px; }
+        .api-status-pill { transition: background 0.2s; user-select: none; }
+        .api-status-pill:hover { filter: brightness(1.05); }
+        .api-status-pill.green { background: #21ba45 !important; color: white !important; }
+        .api-status-pill.red { background: #db2828 !important; color: white !important; }
+        .api-status-pill.grey { background: #767676 !important; color: white !important; }
+        .api-status-pill.yellow { background: #fbbd08 !important; color: white !important; }
+        .api-status-pill .detail { opacity: 0.85; font-size: 11px; margin-left: 6px; padding-left: 6px; border-left: 1px solid rgba(255,255,255,0.5); }
+        .api-status-pill i.icon { margin-right: 4px !important; }
+        @keyframes pulse-checking { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .api-status-pill.grey i.icon { animation: pulse-checking 1.5s infinite; }
+        /* Sortable table headers di tab Jadwal & Reminder */
+        th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+        th.sortable:hover { background: #f0f4f8 !important; }
+        th.sortable .sort-ind { font-size: 10px; margin-left: 4px; color: #999; }
+        th.sortable.sorted .sort-ind { color: #2185d0; font-weight: bold; }
+        .schedules-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+        .schedules-toolbar .search-box { flex: 1; min-width: 220px; max-width: 360px; }
+        .import-row-ok { background: #f1f8f1; }
+        .import-row-fail { background: #fdecea; }
     </style>
 </head>
 <body>
@@ -43,10 +62,11 @@
             <h1>WhatsApp Dashboard</h1>
             <div class="tag">Multi-device · Pesan terjadwal · Reminder otomatis</div>
         </div>
-        <div style="margin-left:auto">
-            <div class="ui label" :class="upstreamOk ? 'green' : 'red'">
-                <i class="circle icon"></i>
-                API: {{ upstreamUrl || 'unknown' }}
+        <div style="margin-left:auto" :title="upstreamTooltip">
+            <div class="ui label api-status-pill" :class="apiStatusClass" @click="checkUpstreamHealth(true)" style="cursor:pointer" :title="upstreamTooltip">
+                <i :class="apiStatusIcon"></i>
+                {{ apiStatusLabel }}
+                <span v-if="upstream.latency_ms != null" class="detail">{{ upstream.latency_ms }}ms</span>
             </div>
         </div>
     </div>
@@ -61,6 +81,12 @@
         <a class="item" :class="{active: tab === 'schedules'}" @click="tab='schedules'">
             <i class="calendar alternate icon"></i> Jadwal & Reminder
             <span v-if="schedules.length" class="ui circular mini label">{{ schedules.length }}</span>
+        </a>
+        <a class="item" :class="{active: tab === 'broadcast'}" @click="openBroadcastTab">
+            <i class="bullhorn icon"></i> Broadcast
+            <span v-if="broadcasts.filter(b => b.status === 'running').length" class="ui circular mini red label">
+                {{ broadcasts.filter(b => b.status === 'running').length }}
+            </span>
         </a>
         <a class="item" :class="{active: tab === 'logs'}" @click="tab='logs'">
             <i class="history icon"></i> Riwayat
@@ -84,40 +110,60 @@
                 Belum ada device. Klik <b>Tambah Device</b> di atas untuk mulai.
             </div>
             <div v-else class="ui three stackable cards">
-                <div v-for="d in devices" :key="d.device || d.id"
+                <div v-for="d in devices" :key="d.id || d.device"
                      class="ui card device"
-                     :class="{selected: selectedDevice === (d.device || d.id)}"
-                     @click="selectedDevice = (d.device || d.id)">
+                     :class="{selected: selectedDevice === (d.id || d.device)}"
+                     @click="selectedDevice = (d.id || d.device)">
                     <div class="content">
                         <div class="header">
                             <i class="mobile alternate icon"></i>
-                            {{ d.device || d.id || d.name || '(unnamed)' }}
+                            {{ d.id || d.device || d.name || '(unnamed)' }}
                         </div>
                         <div class="meta">
-                            <span :class="['pill', d.is_logged_in ? 'on' : 'off']">
-                                {{ d.is_logged_in ? 'logged in' : 'logged out' }}
-                            </span>
-                            <span :class="['pill', d.is_connected ? 'on' : 'warn']" style="margin-left:6px">
-                                {{ d.is_connected ? 'connected' : 'disconnected' }}
+                            <!-- Tri-state status pill: Connected (green) = paired + WS aktif,
+                                 Offline paired (yellow) = pernah login tapi WS down,
+                                 Disconnected (red) = belum pernah pair atau session hilang.
+                                 Helper deviceStatusClass/Label/Icon ada di methods. -->
+                            <span :class="['pill', deviceStatusClass(d)]">
+                                <i :class="deviceStatusIcon(d)" style="margin-right:4px"></i>
+                                {{ deviceStatusLabel(d) }}
                             </span>
                         </div>
                         <div class="description" style="margin-top:10px;font-size:12px;color:#666">
                             <div v-if="d.jid"><b>JID:</b> {{ d.jid }}</div>
                             <div v-if="d.display_name"><b>Nama:</b> {{ d.display_name }}</div>
+                            <div v-if="isDevicePairedOffline(d)" style="color:#856404;font-size:11px;margin-top:4px">
+                                <i class="exclamation triangle icon"></i>
+                                Kredensial pair masih tersimpan, WebSocket terputus. Klik <b>Reconnect</b> untuk hubungkan ulang.
+                            </div>
+                            <div v-if="d.state" style="color:#999;font-size:11px;margin-top:2px">
+                                state: <code>{{ d.state }}</code>
+                                <span v-if="typeof d.is_connected === 'boolean'">
+                                    · is_connected=<code>{{ d.is_connected }}</code>
+                                    · is_logged_in=<code>{{ d.is_logged_in }}</code>
+                                </span>
+                            </div>
                         </div>
                     </div>
                     <div class="extra content" @click.stop>
                         <div class="ui mini buttons">
-                            <button v-if="!d.is_logged_in" class="ui green button" @click.stop="openLoginQR(d.device || d.id)">
-                                <i class="qrcode icon"></i> Scan QR
-                            </button>
-                            <button v-else class="ui orange button" @click.stop="doLogout(d.device || d.id)">
+                            <!-- Tombol berbeda per state:
+                                 - Connected      : Logout (orange)
+                                 - PairedOffline  : Reconnect prominent (green) + Logout tetap
+                                 - Disconnected   : Scan QR (green) -->
+                            <button v-if="isDeviceConnected(d)" class="ui orange button" @click.stop="doLogout(d.id || d.device)">
                                 <i class="sign-out icon"></i> Logout
                             </button>
-                            <button class="ui blue button" @click.stop="doReconnect(d.device || d.id)" title="Reconnect">
+                            <button v-else-if="isDevicePairedOffline(d)" class="ui green button" @click.stop="doReconnect(d.id || d.device)" title="Hubungkan ulang WebSocket (kredensial pair masih ada)">
+                                <i class="plug icon"></i> Reconnect
+                            </button>
+                            <button v-else class="ui green button" @click.stop="openLoginQR(d.id || d.device)">
+                                <i class="qrcode icon"></i> Scan QR
+                            </button>
+                            <button v-if="isDeviceConnected(d) || isDevicePairedOffline(d)" class="ui blue button" @click.stop="doReconnect(d.id || d.device)" title="Reconnect">
                                 <i class="sync icon"></i>
                             </button>
-                            <button class="ui red button" @click.stop="doDeleteDevice(d.device || d.id)" title="Hapus device">
+                            <button class="ui red button" @click.stop="doDeleteDevice(d.id || d.device)" title="Hapus device (full purge: logout + disconnect + hapus chatstorage)">
                                 <i class="trash icon"></i>
                             </button>
                         </div>
@@ -298,26 +344,79 @@
         <div class="ui top attached header">
             <i class="calendar alternate icon"></i> Jadwal & Reminder
             <button class="ui right floated mini primary button" @click="openScheduleEditor()"><i class="plus icon"></i> Buat Jadwal Baru</button>
+            <!-- Import / Export Excel. File input disembunyikan; tombol Import
+                 trigger klik ke input. Hasil import muncul di modal. -->
+            <input type="file" ref="schImportInput" accept=".xlsx"
+                   style="display:none" @change="onScheduleImportFile">
+            <button class="ui right floated mini basic button" @click="triggerScheduleImport"
+                    :class="{loading: schImporting}" title="Import jadwal dari file .xlsx">
+                <i class="upload icon"></i> Import Excel
+            </button>
+            <button class="ui right floated mini basic button" @click="doScheduleExport"
+                    :class="{loading: schExporting}" :disabled="!schedules.length"
+                    :title="schedules.length ? 'Download semua jadwal sebagai .xlsx' : 'Belum ada jadwal untuk di-export'">
+                <i class="download icon"></i> Export Excel
+            </button>
             <button class="ui right floated mini button" @click="loadSchedules"><i class="refresh icon"></i> Reload</button>
         </div>
         <div class="ui attached segment">
+            <!-- Search + sort toolbar. Filter & sort di client side; tidak ada
+                 roundtrip ke server. Cocok untuk volume sampai beberapa ribu row. -->
+            <div class="schedules-toolbar">
+                <div class="ui small icon input search-box">
+                    <input type="text" v-model="schSearch" placeholder="Cari nama / device / nomor / pesan...">
+                    <i v-if="schSearch" class="link close icon" @click="schSearch = ''" title="Bersihkan"></i>
+                    <i v-else class="search icon"></i>
+                </div>
+                <div style="font-size:12px;color:#666">
+                    <span v-if="schSearch">
+                        Menampilkan <b>{{ filteredSortedSchedules.length }}</b> dari {{ schedules.length }} jadwal
+                    </span>
+                    <span v-else-if="schedules.length">
+                        Total <b>{{ schedules.length }}</b> jadwal
+                    </span>
+                </div>
+                <div style="margin-left:auto;font-size:12px;color:#888" v-if="schSortField">
+                    Urut: <b>{{ schSortLabel }}</b>
+                    <a @click="resetScheduleSort" style="margin-left:6px;cursor:pointer" title="Reset ke default (terbaru di atas)">
+                        <i class="undo icon"></i>
+                    </a>
+                </div>
+            </div>
             <table class="ui celled compact table">
                 <thead>
                 <tr>
-                    <th>Nama</th>
-                    <th>Device</th>
-                    <th>Tujuan</th>
-                    <th>Tipe</th>
-                    <th>Jadwal</th>
-                    <th>Next Run</th>
-                    <th>Last</th>
-                    <th>Status</th>
+                    <th class="sortable" :class="{sorted: schSortField === 'name'}" @click="setScheduleSort('name')">
+                        Nama <span class="sort-ind">{{ scheduleSortInd('name') }}</span>
+                    </th>
+                    <th class="sortable" :class="{sorted: schSortField === 'device_id'}" @click="setScheduleSort('device_id')">
+                        Device <span class="sort-ind">{{ scheduleSortInd('device_id') }}</span>
+                    </th>
+                    <th class="sortable" :class="{sorted: schSortField === 'recipient'}" @click="setScheduleSort('recipient')">
+                        Tujuan <span class="sort-ind">{{ scheduleSortInd('recipient') }}</span>
+                    </th>
+                    <th class="sortable" :class="{sorted: schSortField === 'message_type'}" @click="setScheduleSort('message_type')">
+                        Tipe <span class="sort-ind">{{ scheduleSortInd('message_type') }}</span>
+                    </th>
+                    <th class="sortable" :class="{sorted: schSortField === 'schedule_type'}" @click="setScheduleSort('schedule_type')">
+                        Jadwal <span class="sort-ind">{{ scheduleSortInd('schedule_type') }}</span>
+                    </th>
+                    <th class="sortable" :class="{sorted: schSortField === 'next_run_at'}" @click="setScheduleSort('next_run_at')">
+                        Next Run <span class="sort-ind">{{ scheduleSortInd('next_run_at') }}</span>
+                    </th>
+                    <th class="sortable" :class="{sorted: schSortField === 'last_run_at'}" @click="setScheduleSort('last_run_at')">
+                        Last <span class="sort-ind">{{ scheduleSortInd('last_run_at') }}</span>
+                    </th>
+                    <th class="sortable" :class="{sorted: schSortField === 'enabled'}" @click="setScheduleSort('enabled')">
+                        Status <span class="sort-ind">{{ scheduleSortInd('enabled') }}</span>
+                    </th>
                     <th style="width:160px">Aksi</th>
                 </tr>
                 </thead>
                 <tbody>
                 <tr v-if="!schedules.length"><td colspan="9" style="text-align:center;color:#999">Belum ada jadwal.</td></tr>
-                <tr v-for="s in schedules" :key="s.id" class="schedule-row">
+                <tr v-else-if="!filteredSortedSchedules.length"><td colspan="9" style="text-align:center;color:#999">Tidak ada jadwal yang cocok dengan "{{ schSearch }}".</td></tr>
+                <tr v-for="s in filteredSortedSchedules" :key="s.id" class="schedule-row">
                     <td><b>{{ s.name }}</b></td>
                     <td>{{ s.device_id || '—' }}</td>
                     <td><code>{{ s.recipient }}</code></td>
@@ -357,9 +456,59 @@
         <div class="ui top attached header">
             <i class="history icon"></i> Riwayat Eksekusi
             <button class="ui right floated mini button" @click="loadRecentLogs"><i class="refresh icon"></i> Reload</button>
+            <button class="ui right floated mini basic button" @click="loadDbStats(); $nextTick(() => { /* trigger reactive */ })">
+                <i class="database icon"></i> Database Info
+            </button>
         </div>
         <div class="ui attached segment">
-            <table class="ui celled compact table">
+            <!-- ===== Maintenance panel (auto-delete) ===== -->
+            <div class="ui segment" style="background:#fafbfc;border:1px dashed #ccc">
+                <h4 style="margin-top:0">
+                    <i class="broom icon"></i> Auto-Delete Logs
+                    <button class="ui mini basic button" style="margin-left:8px" @click="loadDbStats">
+                        <i class="refresh icon"></i>
+                    </button>
+                </h4>
+                <div v-if="!dbStats" style="color:#888;font-size:13px">Klik <i class="refresh icon"></i> untuk load info database.</div>
+                <div v-else>
+                    <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:10px">
+                        <div class="ui mini label" :class="dbStats.auto_cleanup_enabled ? 'green' : 'grey'">
+                            <i :class="dbStats.auto_cleanup_enabled ? 'check' : 'times'" class="icon"></i>
+                            Auto-cleanup: {{ dbStats.auto_cleanup_enabled ? 'AKTIF' : 'NONAKTIF' }}
+                        </div>
+                        <div class="ui mini label">
+                            Retention: <b>{{ dbStats.log_retention_days }} hari</b>
+                        </div>
+                        <div class="ui mini label" v-for="(count, table) in dbStats.row_counts" :key="table">
+                            {{ table }}: <b>{{ count }}</b>
+                        </div>
+                    </div>
+                    <p style="font-size:13px;color:#555;margin-bottom:8px">
+                        Auto-cleanup berjalan setiap <b>6 jam</b> di background, menghapus log yang lebih lama dari <b>{{ dbStats.log_retention_days }} hari</b> dari tanggal paling lama.
+                        Atur via env var <code>DASHBOARD_LOG_RETENTION_DAYS</code> (0 = nonaktif) di <code>dashboard/.env</code>.
+                    </p>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                        <button class="ui small primary button" @click="runCleanup()" :class="{loading: cleanupRunning}" :disabled="!dbStats.auto_cleanup_enabled">
+                            <i class="trash alternate icon"></i> Jalankan Cleanup Sekarang
+                        </button>
+                        <span style="font-size:12px;color:#888">— atau pakai retention berbeda:</span>
+                        <select v-model.number="manualRetentionDays" class="ui dropdown mini compact">
+                            <option :value="7">7 hari (agresif)</option>
+                            <option :value="14">14 hari</option>
+                            <option :value="30">30 hari (default)</option>
+                            <option :value="60">60 hari</option>
+                            <option :value="90">90 hari</option>
+                            <option :value="180">180 hari</option>
+                            <option :value="365">1 tahun</option>
+                        </select>
+                        <button class="ui small basic button" @click="runCleanup(manualRetentionDays)" :class="{loading: cleanupRunning}">
+                            <i class="trash icon"></i> Hapus &gt; {{ manualRetentionDays }} hari
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <table class="ui celled compact table" style="margin-top:14px">
                 <thead><tr>
                     <th>Waktu</th><th>Schedule ID</th><th>Status</th><th>Detail</th>
                 </tr></thead>
@@ -494,8 +643,301 @@
         </div>
     </div>
 
+    <!-- ================== BROADCAST TAB ================== -->
+    <div v-if="tab === 'broadcast'">
+        <div class="ui top attached header">
+            <i class="bullhorn icon"></i> Broadcast Pesan
+            <button class="ui right floated mini button" @click="loadBroadcasts" title="Refresh">
+                <i class="refresh icon"></i> Reload
+            </button>
+        </div>
+        <div class="ui attached segment">
+            <div class="ui icon warning message" style="margin-bottom:14px">
+                <i class="shield alternate icon"></i>
+                <div class="content">
+                    <div class="header">Tip menghindari banned WhatsApp</div>
+                    <ul style="margin:6px 0">
+                        <li>Gunakan <b>random delay</b> antar pesan (default 8-25 detik, manusiawi).</li>
+                        <li>Aktifkan <b>batch break</b> untuk volume besar — istirahat 2-5 menit tiap 30-50 pesan.</li>
+                        <li>Hindari kirim ke nomor yang belum pernah chat. Banyak <b>"unknown number"</b> = trigger antispam WA.</li>
+                        <li>Variasikan isi pesan dengan <b>spintax</b>: <code>{Halo|Hai|Hi}</code> akan dirandom per pesan.</li>
+                        <li>Batas aman tidak resmi: <b>≤200 pesan/hari</b> untuk nomor baru, <b>≤500/hari</b> untuk nomor lama.</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Active broadcast progress -->
+            <div v-if="activeBroadcast" class="ui blue segment" style="margin-bottom:16px">
+                <h4 style="margin-top:0">
+                    <i class="paper plane icon"></i> Sedang berjalan: {{ activeBroadcast.name }}
+                    <span class="ui mini label" :class="bcStatusColor(activeBroadcast.status)">{{ activeBroadcast.status }}</span>
+                </h4>
+                <div class="ui blue progress" :data-percent="bcProgressPercent(activeBroadcast)">
+                    <div class="bar" :style="{width: bcProgressPercent(activeBroadcast) + '%'}">
+                        <div class="progress">{{ bcProgressPercent(activeBroadcast) }}%</div>
+                    </div>
+                    <div class="label">
+                        {{ activeBroadcast.sent_count }} terkirim · {{ activeBroadcast.failed_count }} gagal · dari {{ activeBroadcast.total }} total
+                    </div>
+                </div>
+                <button class="ui red button" style="margin-top:10px" @click="cancelBroadcast(activeBroadcast.id)" :class="{loading: bcCancelling}">
+                    <i class="stop icon"></i> Hentikan Broadcast
+                </button>
+            </div>
+
+            <!-- New broadcast form -->
+            <form class="ui form" @submit.prevent="submitBroadcast" v-if="!activeBroadcast || bcForm.alwaysShowForm">
+                <h4 class="ui horizontal divider header"><i class="edit icon"></i> Buat Broadcast Baru</h4>
+
+                <div class="two fields">
+                    <div class="field">
+                        <label>Nama (untuk catatan, opsional)</label>
+                        <input type="text" v-model="bcForm.name" placeholder="mis. Promo Lebaran 2026">
+                    </div>
+                    <div class="field">
+                        <label>Device pengirim</label>
+                        <select class="ui dropdown" v-model="bcForm.device_id" required>
+                            <option value="">— pilih device —</option>
+                            <option v-for="d in devices" :key="d.id || d.device" :value="d.id || d.device">
+                                {{ d.id || d.device }}{{ !isDeviceConnected(d) ? ' (disconnected)' : '' }}
+                            </option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="two fields">
+                    <div class="field">
+                        <label>Tipe pesan</label>
+                        <select class="ui dropdown" v-model="bcForm.message_type">
+                            <option value="text">Text</option>
+                            <option value="image">Gambar (URL)</option>
+                            <option value="video">Video (URL)</option>
+                            <option value="file">File (URL)</option>
+                            <option value="audio">Audio (URL)</option>
+                        </select>
+                    </div>
+                    <div class="field" v-if="bcForm.message_type !== 'text'">
+                        <label>Media URL</label>
+                        <input type="url" v-model="bcForm.media_url" placeholder="https://...">
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label>
+                        {{ bcForm.message_type === 'text' ? 'Isi pesan' : 'Caption (opsional)' }}
+                        <span style="color:#888;font-weight:normal">
+                            — pakai spintax <code>{Halo|Hai|Hi}</code> untuk variasi otomatis tiap penerima
+                        </span>
+                    </label>
+                    <textarea v-model="bcForm.message" rows="5" :placeholder="bcForm.message_type === 'text' ? 'Contoh: {Halo|Hai} kak, ada promo nih bulan ini...' : 'Caption media (opsional)'"></textarea>
+                    <small style="color:#888">Karakter: {{ bcForm.message.length }} · Estimasi varian: {{ bcEstimateVariants(bcForm.message) }}</small>
+                </div>
+
+                <div class="field">
+                    <label>
+                        Daftar nomor tujuan
+                        <span style="color:#888;font-weight:normal">
+                            — pisahkan dengan koma, baris baru, atau spasi. Format <code>62xxx</code>, <code>08xxx</code>, atau <code>+62xxx</code> diterima.
+                        </span>
+                    </label>
+                    <textarea v-model="bcForm.recipients" @input="bcParseRecipientsDebounced" rows="6"
+                        placeholder="6281234567890, 08123456789&#10;6289876543210&#10;+628111222333"></textarea>
+                    <div style="margin-top:8px;display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+                        <span class="ui mini green label" v-if="bcParsed.valid_count">
+                            <i class="check icon"></i> {{ bcParsed.valid_count }} nomor valid
+                        </span>
+                        <span class="ui mini red label" v-if="bcParsed.invalid_count">
+                            <i class="warning icon"></i> {{ bcParsed.invalid_count }} invalid
+                        </span>
+                        <span v-if="bcParseLoading" class="ui mini active inline loader"></span>
+                        <a v-if="bcParsed.valid_count" @click="bcShowPreview = !bcShowPreview" style="cursor:pointer;font-size:12px">
+                            {{ bcShowPreview ? '▲ Tutup' : '▼ Lihat hasil parse' }}
+                        </a>
+                    </div>
+                    <div v-if="bcShowPreview" style="margin-top:8px;padding:8px;background:#f9f9f9;border-radius:4px;max-height:200px;overflow:auto;font-size:11px;font-family:monospace">
+                        <div v-if="bcParsed.valid && bcParsed.valid.length">
+                            <b style="color:#2e7d32">✓ Valid ({{ bcParsed.valid.length }}):</b>
+                            <div v-for="j in bcParsed.valid.slice(0, 100)" :key="j">{{ j }}</div>
+                            <div v-if="bcParsed.valid.length > 100" style="color:#888">... dan {{ bcParsed.valid.length - 100 }} lainnya</div>
+                        </div>
+                        <div v-if="bcParsed.invalid && bcParsed.invalid.length" style="margin-top:6px">
+                            <b style="color:#c62828">✗ Invalid:</b>
+                            <div v-for="t in bcParsed.invalid" :key="t">{{ t }}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <h4 class="ui horizontal divider header" @click="bcShowAdvanced = !bcShowAdvanced" style="cursor:pointer">
+                    <i :class="bcShowAdvanced ? 'caret down icon' : 'caret right icon'"></i>
+                    Pengaturan Anti-Spam
+                </h4>
+                <div v-if="bcShowAdvanced">
+                    <div class="two fields">
+                        <div class="field">
+                            <label>Jeda min antar pesan (detik)</label>
+                            <input type="number" v-model.number="bcForm.delay_min_sec" min="3" max="300">
+                            <small style="color:#888">Min 3 detik (dipaksa di backend). Default 8.</small>
+                        </div>
+                        <div class="field">
+                            <label>Jeda max antar pesan (detik)</label>
+                            <input type="number" v-model.number="bcForm.delay_max_sec" min="3" max="600">
+                            <small style="color:#888">Default 25. Jeda random antara min-max.</small>
+                        </div>
+                    </div>
+                    <div class="three fields">
+                        <div class="field">
+                            <label>Batch size</label>
+                            <input type="number" v-model.number="bcForm.batch_size" min="0" max="500">
+                            <small style="color:#888">0 = nonaktif. Mis. 30 = istirahat tiap 30 pesan.</small>
+                        </div>
+                        <div class="field">
+                            <label>Pause batch min (detik)</label>
+                            <input type="number" v-model.number="bcForm.batch_pause_min_sec" min="0" max="3600" :disabled="!bcForm.batch_size">
+                        </div>
+                        <div class="field">
+                            <label>Pause batch max (detik)</label>
+                            <input type="number" v-model.number="bcForm.batch_pause_max_sec" min="0" max="3600" :disabled="!bcForm.batch_size">
+                        </div>
+                    </div>
+                    <div class="field">
+                        <div class="ui toggle checkbox">
+                            <input type="checkbox" v-model="bcForm.shuffle_order">
+                            <label>Acak urutan kirim (recommended untuk anti-pattern detection)</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="ui info message" v-if="bcParsed.valid_count">
+                    <i class="clock icon"></i>
+                    Estimasi waktu total: <b>{{ bcEstimateTotalTime() }}</b>
+                    (avg {{ ((bcForm.delay_min_sec + bcForm.delay_max_sec) / 2).toFixed(1) }} detik/pesan
+                    × {{ bcParsed.valid_count }} pesan{{ bcForm.batch_size > 0 ? ' + batch breaks' : '' }})
+                </div>
+
+                <div v-if="bcFormError" class="ui red message">{{ bcFormError }}</div>
+
+                <button type="submit" class="ui large green button"
+                    :disabled="!bcParsed.valid_count || !bcForm.device_id || bcSubmitting"
+                    :class="{loading: bcSubmitting}">
+                    <i class="paper plane icon"></i>
+                    Kirim Broadcast ({{ bcParsed.valid_count || 0 }} nomor)
+                </button>
+            </form>
+
+            <!-- History -->
+            <h4 class="ui horizontal divider header"><i class="history icon"></i> Riwayat Broadcast</h4>
+            <div v-if="!broadcasts.length" class="ui info message">Belum ada broadcast.</div>
+            <table v-else class="ui celled striped compact table">
+                <thead>
+                    <tr>
+                        <th>Waktu</th>
+                        <th>Nama</th>
+                        <th>Device</th>
+                        <th>Tipe</th>
+                        <th>Progress</th>
+                        <th>Status</th>
+                        <th>Aksi</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr v-for="b in broadcasts" :key="b.id">
+                        <td><small>{{ formatTime(b.created_at) }}</small></td>
+                        <td>{{ b.name }}</td>
+                        <td><code style="font-size:11px">{{ b.device_id }}</code></td>
+                        <td>{{ b.message_type }}</td>
+                        <td>
+                            <div class="ui tiny progress" :data-percent="bcProgressPercent(b)" style="margin:0">
+                                <div class="bar" :style="{width: bcProgressPercent(b) + '%', minWidth: '20px'}"></div>
+                            </div>
+                            <small>{{ b.sent_count }}✓ / {{ b.failed_count }}✗ / {{ b.total }}</small>
+                        </td>
+                        <td><span class="ui mini label" :class="bcStatusColor(b.status)">{{ b.status }}</span></td>
+                        <td>
+                            <button class="ui mini button" @click="bcViewRecipients(b)" title="Detail penerima">
+                                <i class="list icon"></i>
+                            </button>
+                            <button v-if="b.status === 'running'" class="ui mini red button" @click="cancelBroadcast(b.id)" title="Hentikan">
+                                <i class="stop icon"></i>
+                            </button>
+                            <button v-else class="ui mini button" @click="deleteBroadcast(b.id)" title="Hapus">
+                                <i class="trash icon"></i>
+                            </button>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Modal: per-recipient detail -->
+        <div class="ui modal" id="bc-recipients-modal">
+            <i class="close icon"></i>
+            <div class="header">Detail Penerima: {{ bcDetailFor && bcDetailFor.name }}</div>
+            <div class="scrolling content">
+                <div class="ui form" style="margin-bottom:10px">
+                    <div class="inline fields">
+                        <label>Filter:</label>
+                        <div class="field"><div class="ui radio checkbox"><input type="radio" v-model="bcDetailFilter" value="" @change="bcLoadRecipients"><label>Semua</label></div></div>
+                        <div class="field"><div class="ui radio checkbox"><input type="radio" v-model="bcDetailFilter" value="pending" @change="bcLoadRecipients"><label>Pending</label></div></div>
+                        <div class="field"><div class="ui radio checkbox"><input type="radio" v-model="bcDetailFilter" value="sent" @change="bcLoadRecipients"><label>Terkirim</label></div></div>
+                        <div class="field"><div class="ui radio checkbox"><input type="radio" v-model="bcDetailFilter" value="failed" @change="bcLoadRecipients"><label>Gagal</label></div></div>
+                    </div>
+                </div>
+                <table class="ui celled compact table">
+                    <thead><tr><th>Recipient</th><th>Status</th><th>Sent at</th><th>Error</th></tr></thead>
+                    <tbody>
+                        <tr v-if="!bcRecipients.length"><td colspan="4" style="text-align:center;color:#999">Kosong.</td></tr>
+                        <tr v-for="r in bcRecipients" :key="r.id">
+                            <td><code>{{ r.recipient }}</code><div v-if="r.raw_input !== r.recipient" style="font-size:10px;color:#888">raw: {{ r.raw_input }}</div></td>
+                            <td><span class="ui mini label" :class="bcRecipientStatusColor(r.status)">{{ r.status }}</span></td>
+                            <td><small>{{ r.sent_at ? formatTime(r.sent_at) : '—' }}</small></td>
+                            <td><small style="color:#c62828">{{ r.error }}</small></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="actions"><button class="ui cancel button">Tutup</button></div>
+        </div>
+    </div>
+
     <!-- ================== AI REPLY TAB ================== -->
     <div v-if="tab === 'aireply'">
+        <!-- ===== GLOBAL PAUSE BANNER (paling atas, visible across sub-tabs) =====
+             Saat paused, banner merah dengan countdown + tombol Resume. Saat aktif,
+             panel kecil hijau dengan tombol Pause + dropdown durasi. -->
+        <div v-if="aiPaused" class="ui icon negative message">
+            <i class="pause icon"></i>
+            <div class="content">
+                <div class="header">AI Auto-Reply DI-PAUSE — semua device silent</div>
+                <p>
+                    Tidak ada balasan otomatis (AI maupun static "Auto reply message") sampai
+                    <b v-if="aiPauseRemainingHuman">{{ aiPauseRemainingHuman }}</b>
+                    <span v-else>resume manual atau container restart</span>.
+                </p>
+                <button class="ui small green button" @click="aiResume" :class="{loading: aiPauseSaving}">
+                    <i class="play icon"></i> Resume Sekarang
+                </button>
+            </div>
+        </div>
+        <div v-else class="ui segment" style="margin-bottom:14px;background:#fff8e1;border:1px solid #ffd180">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <i class="pause circle outline icon" style="font-size:24px;color:#f57c00"></i>
+                <div style="flex:1;min-width:200px">
+                    <b>Pause Semua Auto Reply</b>
+                    <div style="color:#666;font-size:12px">Hentikan sementara AI Reply &amp; static auto-reply untuk seluruh device. Berguna saat meeting / liburan.</div>
+                </div>
+                <select v-model.number="aiPauseDuration" class="ui dropdown mini compact">
+                    <option :value="15">15 menit</option>
+                    <option :value="60">1 jam</option>
+                    <option :value="240">4 jam</option>
+                    <option :value="480">8 jam</option>
+                    <option :value="1440">24 jam</option>
+                    <option :value="0">Indefinite</option>
+                </select>
+                <button class="ui small orange button" @click="aiPause" :class="{loading: aiPauseSaving}">
+                    <i class="pause icon"></i> Pause {{ aiPauseDurationLabel }}
+                </button>
+            </div>
+        </div>
         <div class="ui top attached header">
             <i class="robot icon"></i> AI Auto-Reply
         </div>
@@ -505,8 +947,8 @@
                     <label style="min-width:80px"><i class="mobile alternate icon"></i> Device:</label>
                     <select class="ui dropdown" v-model="selectedDevice" style="min-width:220px">
                         <option value="">— pilih device —</option>
-                        <option v-for="d in devices" :key="d.device || d.id" :value="d.device || d.id">
-                            {{ d.device || d.id }}{{ d.name ? ' · ' + d.name : '' }}{{ d.is_logged_in === false ? ' (logged out)' : '' }}
+                        <option v-for="d in devices" :key="d.id || d.device" :value="d.id || d.device">
+                            {{ d.id || d.device }}{{ d.display_name ? ' · ' + d.display_name : (d.name ? ' · ' + d.name : '') }}{{ !isDeviceConnected(d) ? ' (disconnected)' : '' }}
                         </option>
                     </select>
                     <button class="ui mini basic button" @click="loadDevices" title="Refresh daftar device" style="margin-left:8px">
@@ -521,6 +963,21 @@
             <div v-if="!selectedDevice" class="ui warning message">
                 <i class="warning sign icon"></i>
                 Pilih device di dropdown di atas — atau buka tab <b>Devices</b> untuk tambah/login device baru.
+            </div>
+            <div v-else-if="aiFeatureDisabled" class="ui icon error message">
+                <i class="ban icon"></i>
+                <div class="content">
+                    <div class="header">AI Reply belum aktif di core</div>
+                    <p>{{ aiFeatureDisabledMessage || 'Set AI_REPLY_ENABLED=true di src/.env lalu restart container core.' }}</p>
+                    <p style="margin-top:6px">
+                        <b>Cara cepat (Docker):</b><br>
+                        Default-nya sudah AI_REPLY_ENABLED=true dan AI_ENCRYPTION_KEY auto-generated. Kalau masih dapat pesan ini, container kemungkinan masih pakai image lama. Rebuild:
+                        <code style="display:block;background:#f9f9f9;padding:6px;margin-top:4px;border-radius:4px">docker compose -f docker-compose.aapanel.yml up -d --build whatsapp_go</code>
+                    </p>
+                    <button class="ui small primary button" style="margin-top:8px" @click="aiFeatureDisabled = false; aiOpen(aiTab || 'config')">
+                        <i class="refresh icon"></i> Sudah saya aktifkan, coba lagi
+                    </button>
+                </div>
             </div>
             <template v-else>
                 <div class="ui pointing secondary menu" style="margin-top:0">
@@ -542,6 +999,65 @@
 
                 <!-- ===== CONFIG SUB-TAB ===== -->
                 <div v-if="aiTab === 'config'">
+                    <!-- Multi-device health check panel — diagnostic UI utk verify
+                         tiap device siap reply. Lebih reliable dari trial-and-error. -->
+                    <div v-if="loggedInDeviceCount >= 2" class="ui segment" style="margin-bottom:14px;background:#f8fafc;border:1px solid #e0e6ed">
+                        <h4 style="margin:0 0 8px 0">
+                            <i class="heartbeat icon"></i> Multi-Device Health Check
+                            <button class="ui mini button" style="margin-left:8px" :class="{loading: aiHealthLoading}" @click="aiCheckHealth">
+                                <i class="search icon"></i> Cek Semua Device
+                            </button>
+                        </h4>
+                        <div v-if="!aiHealth" style="color:#888;font-size:13px">
+                            Klik "Cek Semua Device" untuk audit per-device: config? API key? chat-toggle? Berguna kalau ada device yang tidak balas otomatis padahal sudah apply-to-all.
+                        </div>
+                        <div v-else>
+                            <div style="margin-bottom:8px">
+                                <span class="ui mini label" :class="{
+                                    green: aiHealth.overall === 'all_ready',
+                                    yellow: aiHealth.overall === 'partial',
+                                    red: aiHealth.overall === 'none_ready'
+                                }">
+                                    {{ aiHealth.overall === 'all_ready' ? '✓ SEMUA SIAP' : aiHealth.overall === 'partial' ? '⚠ SEBAGIAN BERMASALAH' : '✗ TIDAK ADA YANG SIAP' }}
+                                </span>
+                                <span style="margin-left:6px;color:#666">{{ aiHealth.ready_count }} / {{ aiHealth.total_devices }} device siap auto-reply</span>
+                            </div>
+                            <table class="ui compact celled small table" style="margin-bottom:0">
+                                <thead>
+                                    <tr>
+                                        <th>Device</th>
+                                        <th>Config</th>
+                                        <th>API Key</th>
+                                        <th>Chat ON</th>
+                                        <th>Provider</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="d in aiHealth.results" :key="d.device_id" :class="{
+                                        positive: d.status === 'ready',
+                                        warning: d.status === 'no_chats',
+                                        negative: d.status === 'no_config' || d.status === 'no_api_key'
+                                    }">
+                                        <td><code>{{ d.device_id }}</code></td>
+                                        <td style="text-align:center">{{ d.has_config ? '✓' : '✗' }}</td>
+                                        <td style="text-align:center">{{ d.has_api_key ? '✓' : '✗' }}</td>
+                                        <td style="text-align:center">{{ d.chat_enabled_count }}/{{ d.chat_toggle_count }}</td>
+                                        <td><small>{{ d.provider || '—' }}{{ d.model ? ' · ' + d.model : '' }}</small></td>
+                                        <td>
+                                            <span class="ui mini label" :class="{
+                                                green: d.status === 'ready',
+                                                yellow: d.status === 'no_chats',
+                                                red: d.status === 'no_config' || d.status === 'no_api_key'
+                                            }">{{ d.status }}</span>
+                                            <div v-if="d.hint" style="color:#666;font-size:11px;margin-top:4px">{{ d.hint }}</div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     <div v-if="aiConfigLoading" class="ui active centered inline loader"></div>
                     <form v-else class="ui form" @submit.prevent="aiSaveConfig">
                         <div class="two fields">
@@ -658,19 +1174,47 @@
                             <p v-if="aiTestResult.latency">Latency: <b>{{ aiTestResult.latency }}ms</b></p>
                             <pre style="white-space:pre-wrap;margin:0;font-size:12px">{{ aiTestResult.body }}</pre>
                         </div>
+                        <!-- Apply-to-all option: muncul kalau ada >=2 device terhubung.
+                             Pakai aiSyncAllOnSave checkbox supaya user sadar bahwa Simpan
+                             akan menulis ke SEMUA device, bukan cuma yg sedang dipilih.
+                             Plus ikut sync chat-settings supaya device kedua-dst BENAR-benar
+                             bisa balas otomatis (tanpa chat-setting row, AI Reply silent skip). -->
+                        <div v-if="loggedInDeviceCount >= 2" class="ui segment" style="background:#fffbf0;border:1px solid #fbbd08">
+                            <div class="ui toggle checkbox">
+                                <input type="checkbox" id="ai-apply-all" v-model="aiSyncAllOnSave">
+                                <label for="ai-apply-all">
+                                    <b>Apply config &amp; chat-toggles ke semua {{ loggedInDeviceCount }} device terhubung</b>
+                                    <div style="color:#888;font-size:12px;margin-top:4px">
+                                        Saat dicentang, klik Simpan akan menulis ke <b>seluruh device logged-in</b>:
+                                        <ol style="margin:4px 0 0 18px;padding:0">
+                                            <li>Config (provider, model, API key, prompt, dll)</li>
+                                            <li>Semua <b>chat-toggle</b> yang ada di device <code>{{ selectedDevice }}</code> (replikasi ke device lain). <b>Ini penting</b> — tanpa ini, device 2-dst punya config tapi tidak balas otomatis karena chat-toggle belum di-set.</li>
+                                        </ol>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
                         <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                             <div class="ui buttons">
-                                <button type="button" class="ui button" :class="{loading: aiTesting}" @click="aiTestConfig">
+                                <button type="button" class="ui button" :class="{loading: aiTesting}" @click="aiTestConfig"
+                                        title="Test otomatis save config dulu ke device aktif, lalu kirim 1 request percobaan ke provider">
                                     <i class="plug icon"></i> Test Connection
                                 </button>
                                 <div class="or"></div>
-                                <button type="submit" class="ui primary button" :class="{loading: aiSaving}">
-                                    <i class="save icon"></i> Simpan
+                                <button type="submit" class="ui primary button" :class="{loading: aiSaving}" :title="aiSyncAllOnSave ? 'Simpan ke semua device terhubung' : 'Simpan ke device ' + selectedDevice">
+                                    <i :class="aiSyncAllOnSave ? 'cloud upload icon' : 'save icon'"></i>
+                                    {{ aiSyncAllOnSave ? 'Simpan ke Semua Device' : 'Simpan' }}
                                 </button>
                             </div>
                             <button type="button" class="ui basic button" @click="aiConfigLoaded = false; aiLoadConfig()" title="Reload dari server (buang edit yang belum disimpan)">
                                 <i class="sync icon"></i> Reload dari server
                             </button>
+                            <small style="color:#888;font-size:11px;flex-basis:100%;margin-top:4px">
+                                <i class="info circle icon"></i>
+                                <b>Test Connection</b> akan otomatis simpan dulu config ke <code>{{ selectedDevice }}</code>, baru kirim request ke provider.
+                                Untuk apply ke semua device, centang toggle di atas lalu klik <b>Simpan ke Semua Device</b>.
+                            </small>
                         </div>
                     </form>
                 </div>
@@ -713,6 +1257,17 @@
 
                 <!-- ===== CHAT TOGGLE SUB-TAB ===== -->
                 <div v-if="aiTab === 'chats'">
+                    <div class="ui icon info message" style="margin-bottom:14px">
+                        <i class="info circle icon"></i>
+                        <div class="content">
+                            <div class="header">Semantic toggle chat AI Reply</div>
+                            <p style="margin:4px 0">
+                                <b>Tidak ada row (chat tidak terdaftar)</b> → AI Reply skip; <code>WHATSAPP_AUTO_REPLY</code> static (kalau di-set) tetap fire.<br>
+                                <b>Row enabled = ON</b> → AI Reply jalan; static auto-reply skip.<br>
+                                <b>Row enabled = OFF</b> → <b>AI &amp; static dua-duanya skip</b> (explicit opt-out). Pakai ini kalau Anda ingin SILENT untuk chat tertentu.
+                            </p>
+                        </div>
+                    </div>
                     <div class="ui form">
                         <div class="two fields">
                             <div class="field">
@@ -728,8 +1283,18 @@
                                 </div>
                             </div>
                         </div>
+                        <div v-if="loggedInDeviceCount >= 2" class="field">
+                            <div class="ui toggle checkbox">
+                                <input type="checkbox" id="ai-chat-apply-all" v-model="aiChatSyncAll">
+                                <label for="ai-chat-apply-all">
+                                    Apply ke semua {{ loggedInDeviceCount }} device terhubung
+                                    <small style="display:block;color:#888">Aktifkan toggle AI untuk chat ini di seluruh device sekaligus.</small>
+                                </label>
+                            </div>
+                        </div>
                         <button class="ui primary button" :class="{loading: aiChatSaving}" @click="aiAddChat">
-                            <i class="plus icon"></i> Simpan
+                            <i :class="aiChatSyncAll ? 'cloud upload icon' : 'plus icon'"></i>
+                            {{ aiChatSyncAll ? 'Simpan ke Semua Device' : 'Simpan' }}
                         </button>
                         <button class="ui button" @click="aiListChats"><i class="refresh icon"></i> Refresh</button>
                     </div>
@@ -819,6 +1384,70 @@
         </div>
     </div>
 
+    <!-- ================== IMPORT RESULT MODAL ================== -->
+    <!-- Muncul setelah POST /api/schedules/import selesai. Tampilkan ringkasan
+         imported/failed + tabel per-baris supaya user tahu baris mana yang
+         gagal & alasannya. Pakai pattern yang sama dengan apply-to-all result
+         (alert sederhana untuk single-action; modal untuk hasil banyak baris). -->
+    <div class="ui modal" id="schedule-import-result-modal">
+        <i class="close icon"></i>
+        <div class="header">
+            <i class="upload icon"></i> Hasil Import Excel
+        </div>
+        <div class="scrolling content">
+            <div v-if="schImportResult" style="margin-bottom:12px">
+                <div class="ui mini statistics">
+                    <div class="ui green statistic">
+                        <div class="value">{{ schImportResult.imported_count }}</div>
+                        <div class="label">Berhasil</div>
+                    </div>
+                    <div class="ui red statistic" v-if="schImportResult.failed_count">
+                        <div class="value">{{ schImportResult.failed_count }}</div>
+                        <div class="label">Gagal</div>
+                    </div>
+                    <div class="ui grey statistic">
+                        <div class="value">{{ schImportResult.total }}</div>
+                        <div class="label">Total Baris</div>
+                    </div>
+                </div>
+                <div v-if="schImportResult.failed_count" class="ui yellow message" style="margin-top:10px">
+                    <i class="warning sign icon"></i>
+                    Baris yang gagal dilewati — data yang valid tetap di-import. Perbaiki baris-baris di bawah ini di file Excel lalu coba import ulang (akan jadi row baru lagi, hapus yang duplikat kalau perlu).
+                </div>
+            </div>
+            <table class="ui celled compact table" v-if="schImportResult && schImportResult.results && schImportResult.results.length">
+                <thead><tr>
+                    <th style="width:60px">Row</th>
+                    <th>Nama</th>
+                    <th style="width:80px">Status</th>
+                    <th>Detail</th>
+                </tr></thead>
+                <tbody>
+                    <tr v-for="(r, i) in schImportResult.results" :key="i"
+                        :class="r.ok ? 'import-row-ok' : 'import-row-fail'">
+                        <td>{{ r.row }}</td>
+                        <td>{{ r.name || '—' }}</td>
+                        <td>
+                            <span class="ui mini label" :class="r.ok ? 'green' : 'red'">
+                                {{ r.ok ? 'OK' : 'GAGAL' }}
+                            </span>
+                        </td>
+                        <td>
+                            <small v-if="r.error" :style="{color: r.ok ? '#856404' : '#c62828'}">{{ r.error }}</small>
+                            <small v-else-if="r.schedule_id">Tersimpan sebagai schedule #{{ r.schedule_id }}</small>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+            <div v-else-if="schImportResult" style="text-align:center;color:#999;padding:14px">
+                Tidak ada baris yang di-proses.
+            </div>
+        </div>
+        <div class="actions">
+            <button class="ui cancel button">Tutup</button>
+        </div>
+    </div>
+
     <!-- ================== LOGS MODAL ================== -->
     <div class="ui modal" id="logs-modal">
         <i class="close icon"></i>
@@ -849,10 +1478,32 @@ createApp({
             tab: 'devices',
             upstreamUrl: '',
             upstreamOk: true,
+            // --- API health badge state ---
+            upstream: {
+                status: 'checking',   // checking | connected | disconnected
+                latency_ms: null,
+                checked_at: null,
+                error: '',
+                note: '',
+            },
+            upstreamPollTimer: null,
+            // --- DB stats / cleanup ---
+            dbStats: null,
+            cleanupRunning: false,
+            manualRetentionDays: 30,
             devices: [],
             devicesLoading: false,
             selectedDevice: localStorage.getItem('selectedDevice') || '',
             schedules: [],
+            // --- Schedules tab: search / sort / xlsx import-export ---
+            // schSortField empty = default sort (id DESC, "terbaru di atas").
+            // Klik header sekali = ASC, klik lagi = DESC, klik ketiga = reset.
+            schSearch: '',
+            schSortField: '',
+            schSortOrder: 'asc',   // 'asc' | 'desc'
+            schExporting: false,
+            schImporting: false,
+            schImportResult: null,
             sendForm: this.freshSendForm(),
             sending: false,
             sendResult: null,
@@ -893,6 +1544,38 @@ createApp({
             aiLogsLoading: false,
             aiLogFilter: { chat_jid: '', status: '', limit: 50 },
             aiExpandedLog: null,
+            // True kalau core return code AI_REPLY_DISABLED di salah satu
+            // call /aireply/* -> dashboard tampilkan banner instead of toast.
+            aiFeatureDisabled: false,
+            aiFeatureDisabledMessage: '',
+            // Apply-to-all toggles. Kalau true, dashboard pakai endpoint
+            // bulk /aireply/.../apply-to-all yang fan-out ke semua device
+            // logged_in (bukan cuma selectedDevice).
+            aiSyncAllOnSave: false,
+            aiChatSyncAll: false,
+            // Multi-device health check state.
+            aiHealth: null,
+            aiHealthLoading: false,
+            // Global pause state. Polled tiap 30s saat tab AI Reply terbuka.
+            aiPaused: false,
+            aiPauseRemainingSec: 0,
+            aiPauseDuration: 60,         // default UI value: 1 jam
+            aiPauseSaving: false,
+            aiPausePollTimer: null,
+            // --- Broadcast state ---
+            broadcasts: [],
+            bcForm: this.freshBroadcastForm(),
+            bcFormError: '',
+            bcSubmitting: false,
+            bcParsed: { valid_count: 0, invalid_count: 0, valid: [], invalid: [] },
+            bcParseLoading: false,
+            bcShowPreview: false,
+            bcShowAdvanced: false,
+            bcCancelling: false,
+            bcPollTimer: null,
+            bcDetailFor: null,
+            bcDetailFilter: '',
+            bcRecipients: [],
         };
     },
     watch: {
@@ -909,23 +1592,231 @@ createApp({
             this.aiChatSettings = [];
             this.aiLogs = [];
             this.aiTestResult = null;
+            // Reset banner — kasih chance lagi kalau user enable AI di core
+            // sambil dashboard masih nyala.
+            this.aiFeatureDisabled = false;
+            this.aiFeatureDisabledMessage = '';
+            // Reset health audit — nilainya global lintas device tapi UX
+            // jadi misleading kalau user lihat snapshot lama setelah switch.
+            this.aiHealth = null;
             // Kalau user sedang di tab AI Reply, langsung re-load data untuk
             // device baru supaya tidak perlu klik sub-tab manual.
             if (this.tab === 'aireply' && v) {
                 this.$nextTick(() => this.aiOpen(this.aiTab || 'config'));
             }
         },
+        // Auto-load dbStats saat user buka tab Riwayat.
+        tab(v) {
+            if (v === 'logs' && !this.dbStats) {
+                this.loadDbStats();
+            }
+        },
+    },
+    computed: {
+        activeBroadcast() {
+            // Broadcast yg sedang running. Cuma satu yg ditampilkan di banner
+            // di atas form — kalau ada multiple, ambil yg terbaru.
+            return this.broadcasts.find(b => b.status === 'running') || null;
+        },
+        aiPauseDurationLabel() {
+            const m = this.aiPauseDuration;
+            if (m === 0) return '∞';
+            if (m < 60) return m + 'm';
+            if (m < 1440) return (m / 60) + 'j';
+            return (m / 1440) + 'h';
+        },
+        aiPauseRemainingHuman() {
+            const s = this.aiPauseRemainingSec;
+            if (!s || s <= 0) return '';
+            // Indefinite pause = pakai 100 tahun di backend → > 1 tahun show "indefinite"
+            if (s > 365 * 24 * 3600) return 'manual resume / restart container';
+            if (s < 60) return s + ' detik lagi';
+            if (s < 3600) return Math.ceil(s / 60) + ' menit lagi';
+            const h = Math.floor(s / 3600);
+            const m = Math.ceil((s - h * 3600) / 60);
+            return `${h} jam ${m} menit lagi`;
+        },
+        loggedInDeviceCount() {
+            // Hitung device yang siap balas otomatis (state == logged_in).
+            // Method ini cuma muncul kalau >=2, jadi sumber truth tunggal
+            // antara badge UI, apply-to-all checkbox visibility, dan
+            // pre-flight check di backend.
+            return this.devices.filter(d => this.isDeviceConnected(d)).length;
+        },
+        apiStatusClass() {
+            return {
+                checking: 'grey',
+                connected: 'green',
+                disconnected: 'red',
+            }[this.upstream.status] || 'grey';
+        },
+        apiStatusIcon() {
+            return {
+                checking: 'circle notched loading icon',
+                connected: 'check circle icon',
+                disconnected: 'times circle icon',
+            }[this.upstream.status] || 'circle icon';
+        },
+        apiStatusLabel() {
+            return {
+                checking: 'Mengecek API Core...',
+                connected: 'API Core Connected',
+                disconnected: 'API Core Disconnected',
+            }[this.upstream.status] || 'API Core';
+        },
+        upstreamTooltip() {
+            const lines = [];
+            lines.push('URL: ' + (this.upstreamUrl || this.upstream.upstream_url || 'unknown'));
+            if (this.upstream.checked_at) lines.push('Last check: ' + this.formatTime(this.upstream.checked_at));
+            if (this.upstream.latency_ms != null) lines.push('Latency: ' + this.upstream.latency_ms + ' ms');
+            if (this.upstream.note) lines.push('Note: ' + this.upstream.note);
+            if (this.upstream.error) lines.push('Error: ' + this.upstream.error);
+            lines.push('(klik untuk re-check)');
+            return lines.join('\n');
+        },
+        // filteredSortedSchedules — single source of truth untuk yang dirender
+        // di tabel Jadwal. Filter dulu (case-insensitive search di field
+        // utama), lalu sort (kalau schSortField di-set; default id DESC).
+        // Performant sampai beberapa ribu row — di atas itu mulai pertimbangkan
+        // pindahkan filter/sort ke backend.
+        filteredSortedSchedules() {
+            let list = this.schedules;
+            const q = (this.schSearch || '').trim().toLowerCase();
+            if (q) {
+                list = list.filter(s => {
+                    return (s.name || '').toLowerCase().includes(q) ||
+                        (s.device_id || '').toLowerCase().includes(q) ||
+                        (s.recipient || '').toLowerCase().includes(q) ||
+                        (s.message || '').toLowerCase().includes(q) ||
+                        (s.message_type || '').toLowerCase().includes(q) ||
+                        (s.schedule_type || '').toLowerCase().includes(q) ||
+                        (s.cron_expr || '').toLowerCase().includes(q) ||
+                        (s.last_status || '').toLowerCase().includes(q);
+                });
+            }
+            // Copy supaya Array.sort tidak mutate this.schedules (Vue reactivity).
+            list = list.slice();
+            if (this.schSortField) {
+                const f = this.schSortField;
+                const order = this.schSortOrder === 'desc' ? -1 : 1;
+                list.sort((a, b) => {
+                    let va = a[f], vb = b[f];
+                    // Datetime-ish field: compare sebagai Date (null = paling akhir).
+                    if (f === 'next_run_at' || f === 'last_run_at') {
+                        const ta = va ? new Date(va).getTime() : Infinity;
+                        const tb = vb ? new Date(vb).getTime() : Infinity;
+                        return (ta - tb) * order;
+                    }
+                    // Boolean: false (off) < true (on)
+                    if (f === 'enabled') {
+                        return ((va ? 1 : 0) - (vb ? 1 : 0)) * order;
+                    }
+                    // String fallback — null/undefined jadi "" agar tidak NaN.
+                    va = (va == null ? '' : String(va)).toLowerCase();
+                    vb = (vb == null ? '' : String(vb)).toLowerCase();
+                    if (va < vb) return -1 * order;
+                    if (va > vb) return 1 * order;
+                    return 0;
+                });
+            }
+            return list;
+        },
+        schSortLabel() {
+            const labels = {
+                name: 'Nama', device_id: 'Device', recipient: 'Tujuan',
+                message_type: 'Tipe', schedule_type: 'Jadwal',
+                next_run_at: 'Next Run', last_run_at: 'Last Run',
+                enabled: 'Status',
+            };
+            const arrow = this.schSortOrder === 'desc' ? '↓' : '↑';
+            return (labels[this.schSortField] || this.schSortField) + ' ' + arrow;
+        },
     },
     mounted() {
         this.loadDevices();
         this.loadSchedules();
         this.loadRecentLogs();
+        this.loadBroadcasts();
+        // Initial ping + periodic poll setiap 30 detik supaya badge tetap
+        // akurat tanpa user perlu refresh halaman.
+        this.checkUpstreamHealth();
+        this.upstreamPollTimer = setInterval(() => this.checkUpstreamHealth(), 30000);
         // semantic dropdowns
         this.$nextTick(() => $('.ui.dropdown').dropdown());
+    },
+    beforeUnmount() {
+        if (this.bcPollTimer) clearInterval(this.bcPollTimer);
+        if (this.upstreamPollTimer) clearInterval(this.upstreamPollTimer);
+        if (this.aiPausePollTimer) clearInterval(this.aiPausePollTimer);
     },
     methods: {
         freshSendForm() {
             return { device_id: this.selectedDevice || '', recipient: '', message_type: 'text', message: '', media_url: '', caption: '', latitude: '', longitude: '', link_url: '' };
+        },
+        // Single source of truth untuk "device ini siap pakai" — dipakai di
+        // semua tempat (badge Devices tab, dropdown di Broadcast & AI Reply,
+        // computed loggedInDeviceCount, dst).
+        //
+        // "Connected" = paired DAN WS aktif → bisa kirim/terima real-time.
+        // Core baru expose is_connected + is_logged_in terpisah; core lama
+        // cuma punya field state. Kita prefer flag baru kalau ada, fallback
+        // ke state, fallback lagi ke legacy is_logged_in boolean.
+        isDeviceConnected(d) {
+            if (!d) return false;
+            // Preferred: explicit flags dari core (dual-bool semantics).
+            if (typeof d.is_connected === 'boolean' && typeof d.is_logged_in === 'boolean') {
+                return d.is_connected && d.is_logged_in;
+            }
+            // Fallback ke state string (core versi lama / sebelum fix).
+            if (typeof d.state === 'string') return d.state === 'logged_in';
+            // Legacy fallback
+            if (typeof d.is_logged_in === 'boolean') return d.is_logged_in;
+            // Tidak tahu — asumsi connected supaya tidak menyembunyikan device valid
+            return true;
+        },
+        // Device paired ke akun WA tapi WS sedang down. Bukan "disconnected"
+        // (yg implies belum pair) — ini state intermediate: kredensial masih
+        // ada, whatsmeow auto-reconnect biasanya kick in dalam beberapa detik.
+        // Dipakai di UI badge untuk distinguish dari "Disconnected" total.
+        isDevicePairedOffline(d) {
+            if (!d) return false;
+            if (typeof d.is_connected === 'boolean' && typeof d.is_logged_in === 'boolean') {
+                return d.is_logged_in && !d.is_connected;
+            }
+            return false;
+        },
+        deviceStatusLabel(d) {
+            if (this.isDeviceConnected(d)) return 'Connected';
+            if (this.isDevicePairedOffline(d)) return 'Offline (paired)';
+            return 'Disconnected';
+        },
+        deviceStatusClass(d) {
+            // Returns class untuk pill: on (hijau), warn (kuning), off (merah)
+            if (this.isDeviceConnected(d)) return 'on';
+            if (this.isDevicePairedOffline(d)) return 'warn';
+            return 'off';
+        },
+        deviceStatusIcon(d) {
+            if (this.isDeviceConnected(d)) return 'check circle icon';
+            if (this.isDevicePairedOffline(d)) return 'wifi icon';
+            return 'times circle icon';
+        },
+        freshBroadcastForm() {
+            return {
+                name: '',
+                device_id: this.selectedDevice || '',
+                message_type: 'text',
+                message: '',
+                media_url: '',
+                recipients: '',
+                delay_min_sec: 8,
+                delay_max_sec: 25,
+                batch_size: 0,
+                batch_pause_min_sec: 120,
+                batch_pause_max_sec: 300,
+                shuffle_order: true,
+                alwaysShowForm: false,
+            };
         },
         freshAddDeviceForm() {
             return { name: '', method: 'qr', phone: '', loading: false, error: '' };
@@ -955,6 +1846,26 @@ createApp({
         },
         aiHeaders() {
             return { headers: { 'X-Device-Id': this.selectedDevice } };
+        },
+        // Cek apakah error AXIOS adalah AI_REPLY_DISABLED dari dashboard
+        // backend. Kalau iya, set state untuk munculin banner dan return
+        // true supaya caller tidak menampilkan alert/toast lain.
+        aiHandleDisabled(err) {
+            const data = err && err.response && err.response.data;
+            if (data && data.code === 'AI_REPLY_DISABLED') {
+                this.aiFeatureDisabled = true;
+                this.aiFeatureDisabledMessage = data.error || '';
+                return true;
+            }
+            if (data && data.code === 'AI_ENCRYPTION_KEY_INVALID') {
+                // Tampilkan banner — re-pakai banner aiFeatureDisabled karena
+                // error ini juga "AI Reply tidak bisa digunakan" sampai
+                // user fix env var-nya.
+                this.aiFeatureDisabled = true;
+                this.aiFeatureDisabledMessage = data.error || 'AI_ENCRYPTION_KEY core tidak valid hex.';
+                return true;
+            }
+            return false;
         },
         freshEditor() {
             return { id: 0, name: '', device_id: this.selectedDevice || '', recipient: '', message_type: 'text', message: '', media_url: '', caption: '', latitude: '', longitude: '', link_url: '', schedule_type: 'once', run_at: '', cron_expr: '', timezone: 'Asia/Jakarta', enabled: true };
@@ -1245,6 +2156,98 @@ createApp({
             await axios.delete('/api/schedules/' + s.id);
             this.loadSchedules();
         },
+        // --- Schedules: sort / search / xlsx import-export -----------------
+        // Tri-state sort per kolom: klik 1x = ASC, klik 2x = DESC, klik 3x =
+        // reset ke default (id DESC, "terbaru di atas"). Pattern ini standar
+        // di tabel data dan tidak butuh tombol reset terpisah.
+        setScheduleSort(field) {
+            if (this.schSortField !== field) {
+                this.schSortField = field;
+                this.schSortOrder = 'asc';
+            } else if (this.schSortOrder === 'asc') {
+                this.schSortOrder = 'desc';
+            } else {
+                // Sudah desc -> reset (default order = server's id DESC, sudah preloaded).
+                this.schSortField = '';
+                this.schSortOrder = 'asc';
+            }
+        },
+        resetScheduleSort() {
+            this.schSortField = '';
+            this.schSortOrder = 'asc';
+        },
+        scheduleSortInd(field) {
+            if (this.schSortField !== field) return '↕';
+            return this.schSortOrder === 'desc' ? '▼' : '▲';
+        },
+        async doScheduleExport() {
+            // Export selalu full list (tidak ikut filter UI) supaya backup
+            // file Excel-nya lengkap. Untuk filtered export, user bisa hapus
+            // baris yg tidak diperlukan di Excel sendiri.
+            this.schExporting = true;
+            try {
+                // Axios responseType=blob supaya browser save .xlsx mentah.
+                const r = await axios.get('/api/schedules/export.xlsx', { responseType: 'blob' });
+                // Coba ambil filename dari Content-Disposition; fallback ke timestamp.
+                let filename = 'schedules.xlsx';
+                const cd = r.headers['content-disposition'] || r.headers['Content-Disposition'];
+                if (cd) {
+                    const m = cd.match(/filename="?([^"]+)"?/i);
+                    if (m) filename = m[1];
+                }
+                // Trigger download via anchor element.
+                const blob = new Blob([r.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('Gagal export: ' + (e.response?.data?.error || e.message));
+            } finally {
+                this.schExporting = false;
+            }
+        },
+        triggerScheduleImport() {
+            // Clear value supaya event change tetap fire kalau user upload file
+            // dengan nama sama dua kali berturut-turut.
+            if (this.$refs.schImportInput) {
+                this.$refs.schImportInput.value = '';
+                this.$refs.schImportInput.click();
+            }
+        },
+        async onScheduleImportFile(ev) {
+            const file = ev.target.files && ev.target.files[0];
+            if (!file) return;
+            if (!file.name.toLowerCase().endsWith('.xlsx')) {
+                alert('File harus berformat .xlsx (Excel). File yang dipilih: ' + file.name);
+                return;
+            }
+            if (!confirm(`Import jadwal dari "${file.name}"?\n\nSetiap baris valid akan ditambahkan sebagai jadwal BARU. Baris invalid akan di-skip dengan detail error per baris. Tidak ada update / replace — kalau ingin ganti yang lama, hapus dulu di tabel.`)) {
+                return;
+            }
+            this.schImporting = true;
+            this.schImportResult = null;
+            try {
+                const fd = new FormData();
+                fd.append('file', file);
+                const r = await axios.post('/api/schedules/import', fd, {
+                    headers: { 'Content-Type': 'multipart/form-data' },
+                });
+                this.schImportResult = r.data || { imported_count: 0, failed_count: 0, total: 0, results: [] };
+                // Reload tabel supaya row yang baru di-import langsung tampil.
+                await this.loadSchedules();
+                // Tampilkan modal hasil.
+                this.$nextTick(() => $('#schedule-import-result-modal').modal('show'));
+            } catch (e) {
+                alert('Import gagal: ' + (e.response?.data?.error || e.message));
+            } finally {
+                this.schImporting = false;
+            }
+        },
         async openLogs(s) {
             this.logsFor = s;
             const r = await axios.get('/api/schedules/' + s.id + '/logs?limit=100');
@@ -1270,6 +2273,7 @@ createApp({
         openAITab() {
             this.tab = 'aireply';
             if (this.selectedDevice) this.aiOpen(this.aiTab || 'config');
+            this.startAIPausePolling();
             this.$nextTick(() => $('.ui.dropdown').dropdown());
         },
         aiOpen(sub) {
@@ -1278,7 +2282,13 @@ createApp({
             if (!this.selectedDevice) return;
             // Load config sekali per sesi (tidak setiap switch sub-tab) supaya edit
             // yang belum disimpan tidak hilang saat user pindah ke Knowledgebase dll.
-            if (sub === 'config' && !this.aiConfigLoaded) this.aiLoadConfig();
+            if (sub === 'config' && !this.aiConfigLoaded) {
+                this.aiLoadConfig();
+                // Background load chat-settings juga — supaya dialog konfirmasi
+                // "Apply to all" bisa kasih tahu count chat yg akan di-replikasi.
+                // Tidak block UI; kalau gagal, fallback ke value sebelumnya.
+                this.aiListChats();
+            }
             else if (sub === 'kb') this.aiListDocs();
             else if (sub === 'chats') this.aiListChats();
             else if (sub === 'logs') this.aiListLogs();
@@ -1301,10 +2311,14 @@ createApp({
                 this.aiConfig.embed_api_key = '';
                 this.aiConfigLoaded = true;
             } catch (e) {
-                if (e.response && e.response.status !== 404) {
+                if (this.aiHandleDisabled(e)) {
+                    this.aiConfig = this.freshAIConfig();
+                } else if (e.response && e.response.status !== 404) {
                     alert('Gagal load AI config: ' + (e.response?.data?.error || e.message));
+                    this.aiConfig = this.freshAIConfig();
+                } else {
+                    this.aiConfig = this.freshAIConfig();
                 }
-                this.aiConfig = this.freshAIConfig();
             } finally {
                 this.aiConfigLoading = false;
                 this.$nextTick(() => $('.ui.dropdown').dropdown());
@@ -1313,26 +2327,109 @@ createApp({
         async aiSaveConfig() {
             this.aiSaving = true;
             try {
-                await axios.put('/api/aireply/config', this.aiConfig, this.aiHeaders());
-                alert('Config AI tersimpan.');
+                if (this.aiSyncAllOnSave && this.loggedInDeviceCount >= 2) {
+                    // Konfirmasi karena ini operasi yang mengubah banyak device.
+                    const n = this.loggedInDeviceCount;
+                    const sourceChats = (this.aiChatSettings || []).length;
+                    const lines = [
+                        `Simpan config + chat-toggle ke SEMUA ${n} device terhubung?`,
+                        '',
+                        `1. Config akan disimpan ke ${n} device.`,
+                    ];
+                    if (sourceChats > 0) {
+                        lines.push(`2. ${sourceChats} chat-toggle dari device ${this.selectedDevice} akan di-replikasi ke ${n - 1} device lain.`);
+                        lines.push('');
+                        lines.push('Setelah ini, semua device dapat AI Reply otomatis untuk chat-chat tersebut.');
+                    } else {
+                        lines.push(`2. Belum ada chat-toggle di device ini, jadi tidak ada yang di-replikasi.`);
+                        lines.push('   (Aktifkan chat-toggle di sub-tab "Chat Toggle" supaya AI Reply jalan)');
+                    }
+                    lines.push('');
+                    if (this.aiConfig.api_key) {
+                        lines.push('API key baru di form akan dipakai untuk semua device.');
+                    } else {
+                        lines.push('⚠️ API key field kosong — pre-flight check akan jalan:');
+                        lines.push('   • Device yang sudah punya key tersimpan: pertahankan');
+                        lines.push('   • Device yang BELUM punya key (first-time config): SAVE DITOLAK dengan error.');
+                        lines.push('   • Kalau ada device yang baru, isi field API key dulu.');
+                    }
+
+                    if (!confirm(lines.join('\n'))) {
+                        return;
+                    }
+                    try {
+                        const r = await axios.post('/api/aireply/config/apply-to-all', this.aiConfig, this.aiHeaders());
+                        const d = r.data || {};
+                        this.aiShowApplyResult('Config sync', d);
+                    } catch (e) {
+                        // Pre-flight 400: device baru perlu API key
+                        const d = e.response?.data;
+                        if (d && d.code === 'AI_API_KEY_REQUIRED_FOR_NEW_DEVICES') {
+                            const missing = (d.devices_needing_key || []).join(', ') || '(unknown)';
+                            alert(
+                                `❌ Apply-to-all ditolak\n\n` +
+                                `${d.devices_needing_key?.length || 0} device belum punya API key tersimpan: ${missing}\n\n` +
+                                `Solusi: isi field "API Key" di form, lalu klik Simpan ke Semua Device lagi.\n` +
+                                `Setelah semua device punya key, apply-to-all berikutnya bisa dengan key kosong (preserve).`
+                            );
+                            return;
+                        }
+                        throw e;   // biarkan outer catch handle (aiHandleDisabled, alert generic)
+                    }
+                } else {
+                    await axios.put('/api/aireply/config', this.aiConfig, this.aiHeaders());
+                    alert('Config AI tersimpan.');
+                }
                 // Reload supaya masked-key display ter-update kalau user baru saja
                 // mengisi key baru.
                 this.aiConfigLoaded = false;
                 await this.aiLoadConfig();
             } catch (e) {
+                if (this.aiHandleDisabled(e)) return;
                 alert('Gagal simpan: ' + (e.response?.data?.error || e.response?.data?.upstream?.message || e.message));
             } finally {
                 this.aiSaving = false;
             }
         },
         async aiTestConfig() {
+            // Core's /aireply/config/test reads config FROM DATABASE, not from
+            // request body. Kalau user klik Test sebelum pernah Save, dapat
+            // "config not set". Workaround: auto-save dulu pakai nilai form
+            // terbaru, baru test. Save idempotent jadi aman dipanggil ulang.
+            if (!this.aiConfig.provider) {
+                this.aiTestResult = { ok: false, body: 'Pilih provider dulu.' };
+                return;
+            }
+            if (!this.aiConfig.model) {
+                this.aiTestResult = { ok: false, body: 'Isi model dulu (mis. gpt-4o-mini, claude-3-5-haiku-latest).' };
+                return;
+            }
             this.aiTesting = true;
             this.aiTestResult = null;
             try {
+                // Step 1: auto-save nilai form ke device aktif (single device,
+                // bukan apply-to-all — testing fokus ke device current).
+                try {
+                    await axios.put('/api/aireply/config', this.aiConfig, this.aiHeaders());
+                } catch (saveErr) {
+                    if (this.aiHandleDisabled(saveErr)) return;
+                    this.aiTestResult = {
+                        ok: false,
+                        body: 'Gagal auto-save config sebelum test: ' +
+                            (saveErr.response?.data?.error || saveErr.response?.data?.upstream?.message || saveErr.message),
+                    };
+                    return;
+                }
+                // Step 2: run actual provider test (LLM round-trip).
                 const r = await axios.post('/api/aireply/config/test', null, this.aiHeaders());
                 const res = r.data.results || {};
                 this.aiTestResult = { ok: true, latency: res.latency_ms, body: res.model_response };
+                // Refresh masked-key display in background — kalau user baru
+                // input key baru tadi, masked indicator-nya jadi up-to-date.
+                this.aiConfigLoaded = false;
+                this.aiLoadConfig();
             } catch (e) {
+                if (this.aiHandleDisabled(e)) return;
                 this.aiTestResult = { ok: false, body: e.response?.data?.error || e.response?.data?.upstream?.message || e.message };
             } finally {
                 this.aiTesting = false;
@@ -1354,6 +2451,7 @@ createApp({
                 if (this.$refs.aiFileInput) this.$refs.aiFileInput.value = '';
                 await this.aiListDocs();
             } catch (e) {
+                if (this.aiHandleDisabled(e)) return;
                 alert('Upload gagal: ' + (e.response?.data?.error || e.message));
             } finally {
                 this.aiUploading = false;
@@ -1365,6 +2463,7 @@ createApp({
                 const r = await axios.get('/api/aireply/documents', this.aiHeaders());
                 this.aiDocs = r.data.results || [];
             } catch (e) {
+                this.aiHandleDisabled(e);
                 this.aiDocs = [];
             } finally {
                 this.aiDocsLoading = false;
@@ -1376,6 +2475,7 @@ createApp({
                 await axios.delete('/api/aireply/documents/' + encodeURIComponent(id), this.aiHeaders());
                 await this.aiListDocs();
             } catch (e) {
+                if (this.aiHandleDisabled(e)) return;
                 alert('Hapus gagal: ' + (e.response?.data?.error || e.message));
             }
         },
@@ -1386,6 +2486,7 @@ createApp({
                 await axios.post('/api/aireply/documents/reindex', null, this.aiHeaders());
                 await this.aiListDocs();
             } catch (e) {
+                if (this.aiHandleDisabled(e)) return;
                 alert('Reindex gagal: ' + (e.response?.data?.error || e.message));
             } finally {
                 this.aiReindexing = false;
@@ -1397,6 +2498,7 @@ createApp({
                 const r = await axios.get('/api/aireply/chat-settings', this.aiHeaders());
                 this.aiChatSettings = r.data.results || [];
             } catch (e) {
+                this.aiHandleDisabled(e);
                 this.aiChatSettings = [];
             } finally {
                 this.aiChatLoading = false;
@@ -1407,6 +2509,7 @@ createApp({
             try {
                 await axios.put('/api/aireply/chat-settings/' + encodeURIComponent(jid), { enabled }, this.aiHeaders());
             } catch (e) {
+                if (this.aiHandleDisabled(e)) return;
                 alert('Gagal: ' + (e.response?.data?.error || e.message));
             } finally {
                 this.aiChatSaving = false;
@@ -1432,13 +2535,379 @@ createApp({
                 alert('Format tidak valid. Contoh: 6289605618749 atau 6289605618749@s.whatsapp.net atau xxxxx@g.us');
                 return;
             }
-            await this.aiSetChat(jid, this.aiNewChatEnabled);
+            if (this.aiChatSyncAll && this.loggedInDeviceCount >= 2) {
+                this.aiChatSaving = true;
+                try {
+                    const n = this.loggedInDeviceCount;
+                    if (!confirm(`Aktifkan/nonaktifkan AI Reply untuk chat ${jid} di SEMUA ${n} device terhubung?`)) {
+                        return;
+                    }
+                    const r = await axios.post(
+                        '/api/aireply/chat-settings/' + encodeURIComponent(jid) + '/apply-to-all',
+                        { enabled: this.aiNewChatEnabled },
+                        this.aiHeaders()
+                    );
+                    this.aiShowApplyResult('Chat toggle', r.data || {});
+                } catch (e) {
+                    if (this.aiHandleDisabled(e)) return;
+                    alert('Gagal: ' + (e.response?.data?.error || e.message));
+                } finally {
+                    this.aiChatSaving = false;
+                }
+            } else {
+                await this.aiSetChat(jid, this.aiNewChatEnabled);
+            }
             this.aiNewChatJid = '';
             await this.aiListChats();
         },
         async aiToggleChat(s) {
             await this.aiSetChat(s.chat_jid, !s.enabled);
             await this.aiListChats();
+        },
+        // ===== Pause / Resume (global, semua device + semua chat) =====
+        async aiPause() {
+            const m = this.aiPauseDuration;
+            const label = m === 0 ? 'tanpa batas waktu' : this.aiPauseDurationLabel;
+            if (!confirm(`Pause AI Auto-Reply (${label})?\n\nSelama paused, SEMUA device tidak akan balas otomatis — AI maupun static "Auto reply message". Pesan masuk tetap diterima & disimpan, hanya balasannya yang di-suppress.`)) {
+                return;
+            }
+            this.aiPauseSaving = true;
+            try {
+                await axios.post('/api/aireply/pause', { minutes: m }, this.aiHeaders());
+                await this.aiPollPauseStatus();
+            } catch (e) {
+                if (this.aiHandleDisabled(e)) return;
+                alert('Gagal pause: ' + (e.response?.data?.error || e.message));
+            } finally {
+                this.aiPauseSaving = false;
+            }
+        },
+        async aiResume() {
+            this.aiPauseSaving = true;
+            try {
+                await axios.post('/api/aireply/resume', null, this.aiHeaders());
+                await this.aiPollPauseStatus();
+            } catch (e) {
+                if (this.aiHandleDisabled(e)) return;
+                alert('Gagal resume: ' + (e.response?.data?.error || e.message));
+            } finally {
+                this.aiPauseSaving = false;
+            }
+        },
+        async aiPollPauseStatus() {
+            if (!this.selectedDevice) return;
+            try {
+                const r = await axios.get('/api/aireply/pause-status', this.aiHeaders());
+                const res = r.data?.results || {};
+                this.aiPaused = !!res.paused;
+                this.aiPauseRemainingSec = res.remaining_seconds || 0;
+            } catch (e) {
+                // Silent — banner cuma efektif kalau backend reachable.
+                // Kalau backend down, biarkan state stale.
+            }
+        },
+        startAIPausePolling() {
+            if (this.aiPausePollTimer) return;
+            // Poll segera + setiap 30 detik. Auto-stop kalau pindah tab.
+            this.aiPollPauseStatus();
+            this.aiPausePollTimer = setInterval(() => {
+                if (this.tab !== 'aireply') {
+                    clearInterval(this.aiPausePollTimer);
+                    this.aiPausePollTimer = null;
+                    return;
+                }
+                this.aiPollPauseStatus();
+                // Local countdown — biar UI tampil smooth (decrement detik
+                // tanpa nunggu fetch berikutnya).
+                if (this.aiPaused && this.aiPauseRemainingSec > 0) {
+                    this.aiPauseRemainingSec -= 30;
+                    if (this.aiPauseRemainingSec < 0) this.aiPauseRemainingSec = 0;
+                }
+            }, 30000);
+        },
+        // Cek kesehatan AI Reply di semua device terhubung. Lihat
+        // /api/aireply/multi-device-health untuk format response.
+        async aiCheckHealth() {
+            this.aiHealthLoading = true;
+            try {
+                const r = await axios.get('/api/aireply/multi-device-health', this.aiHeaders());
+                this.aiHealth = r.data;
+            } catch (e) {
+                if (this.aiHandleDisabled(e)) return;
+                alert('Gagal cek health: ' + (e.response?.data?.error || e.message));
+            } finally {
+                this.aiHealthLoading = false;
+            }
+        },
+        // Tampilkan ringkasan hasil apply-to-all (per-device success/error).
+        // Backend untuk config apply-to-all sekarang juga ikut replicate
+        // chat-settings — kalau ada, tampilkan dua angka biar user yakin
+        // "device 2 sekarang punya semua setting yg perlu untuk auto-reply".
+        aiShowApplyResult(label, data) {
+            const total = data.total || 0;
+            const ok = data.success_count || 0;
+            const failed = (data.results || []).filter(r => !r.ok);
+            let msg = `${label}: ${ok} dari ${total} device berhasil.`;
+
+            // Tambah ringkasan chat-sync kalau backend mengembalikannya
+            // (cuma muncul saat aiApplyConfigToAll dengan with_chats=true).
+            const cs = data.chat_sync;
+            if (cs && cs.source_chats > 0) {
+                msg += `\n\nReplikasi chat-toggle:`;
+                msg += `\n- ${cs.source_chats} chat di device sumber → ${cs.target_devices} device tujuan`;
+                msg += `\n- Total operasi: ${cs.applied_ok} berhasil, ${cs.applied_fail} gagal`;
+                if (cs.applied_ok > 0) {
+                    msg += `\n\nSemua device sekarang punya chat-toggle yang sama → auto-reply akan jalan di seluruh device.`;
+                }
+            } else if (cs && cs.source_chats === 0) {
+                msg += `\n\nBelum ada chat-toggle di device sumber — semua device hanya dapat config. Aktifkan minimal 1 chat di sub-tab "Chat Toggle" supaya AI Reply jalan.`;
+            }
+
+            if (failed.length) {
+                msg += '\n\nDevice yang gagal save config:\n' + failed.map(r => `- ${r.device_id}: ${r.error || 'unknown'}`).join('\n');
+            }
+            alert(msg);
+        },
+        // ===== API status & maintenance =====
+        async checkUpstreamHealth(showSpinner) {
+            if (showSpinner) {
+                this.upstream.status = 'checking';
+            }
+            try {
+                const headers = this.selectedDevice ? { 'X-Device-Id': this.selectedDevice } : {};
+                const r = await axios.get('/api/_health/upstream', { headers, timeout: 8000 });
+                const d = r.data || {};
+                this.upstream.status = d.ok ? 'connected' : 'disconnected';
+                this.upstream.latency_ms = d.latency_ms != null ? d.latency_ms : null;
+                this.upstream.checked_at = d.checked_at || new Date().toISOString();
+                this.upstream.error = d.error || '';
+                this.upstream.note = d.note || '';
+                this.upstreamUrl = d.upstream_url || this.upstreamUrl;
+                this.upstreamOk = !!d.ok;   // legacy field — masih dipakai di sebagian tempat lain
+            } catch (e) {
+                this.upstream.status = 'disconnected';
+                this.upstream.latency_ms = null;
+                this.upstream.checked_at = new Date().toISOString();
+                this.upstream.error = e.response?.data?.error || e.message;
+                this.upstream.note = '';
+                this.upstreamOk = false;
+            }
+        },
+        async loadDbStats() {
+            try {
+                const r = await axios.get('/api/_stats');
+                this.dbStats = r.data;
+            } catch (e) {
+                console.error('loadDbStats:', e);
+            }
+        },
+        async runCleanup(daysOverride) {
+            const days = daysOverride || (this.dbStats && this.dbStats.log_retention_days) || 30;
+            if (!confirm(`Hapus log yang lebih lama dari ${days} hari?\n\nIni akan menghapus schedule_logs dan broadcasts yang sudah selesai dari tanggal paling lama. Tidak bisa di-undo.`)) {
+                return;
+            }
+            this.cleanupRunning = true;
+            try {
+                const params = daysOverride ? { days: daysOverride } : {};
+                const r = await axios.post('/api/_cleanup', null, { params });
+                const s = r.data.results || {};
+                alert(`Cleanup selesai:\n- ${s.deleted_schedule_logs || 0} schedule_logs\n- ${s.deleted_broadcasts || 0} broadcasts\n- ${s.deleted_broadcast_recipients || 0} broadcast_recipients\n\n${r.data.vacuum_performed ? 'VACUUM dijalankan (reclaim disk space).' : ''}`);
+                await this.loadDbStats();
+                // Refresh tabel-tabel yang berubah
+                await this.loadRecentLogs();
+                if (this.tab === 'broadcast') await this.loadBroadcasts();
+            } catch (e) {
+                alert('Gagal: ' + (e.response?.data?.error || e.message));
+            } finally {
+                this.cleanupRunning = false;
+            }
+        },
+        // ===== Broadcast methods =====
+        openBroadcastTab() {
+            this.tab = 'broadcast';
+            this.bcForm.device_id = this.bcForm.device_id || this.selectedDevice || '';
+            this.loadBroadcasts();
+            this.startBroadcastPolling();
+            this.$nextTick(() => $('.ui.dropdown').dropdown());
+        },
+        startBroadcastPolling() {
+            if (this.bcPollTimer) return;
+            this.bcPollTimer = setInterval(() => {
+                // Stop polling kalau pindah tab supaya tidak buang resource.
+                if (this.tab !== 'broadcast') {
+                    clearInterval(this.bcPollTimer);
+                    this.bcPollTimer = null;
+                    return;
+                }
+                // Cuma poll kalau ada running broadcast atau modal recipients terbuka.
+                if (this.activeBroadcast || this.bcDetailFor) {
+                    this.loadBroadcasts(true);
+                    if (this.bcDetailFor) this.bcLoadRecipients();
+                }
+            }, 3000);
+        },
+        async loadBroadcasts(silent) {
+            try {
+                const r = await axios.get('/api/broadcast');
+                this.broadcasts = r.data.results || [];
+            } catch (e) {
+                if (!silent) console.error('loadBroadcasts:', e);
+            }
+        },
+        // Debounced parse — jangan spam endpoint tiap keystroke.
+        bcParseRecipientsDebounced() {
+            if (this._bcParseTimer) clearTimeout(this._bcParseTimer);
+            this._bcParseTimer = setTimeout(() => this.bcParseRecipients(), 400);
+        },
+        async bcParseRecipients() {
+            const raw = (this.bcForm.recipients || '').trim();
+            if (!raw) {
+                this.bcParsed = { valid_count: 0, invalid_count: 0, valid: [], invalid: [] };
+                return;
+            }
+            this.bcParseLoading = true;
+            try {
+                const r = await axios.post('/api/broadcast/preview', { recipients: raw });
+                this.bcParsed = r.data || { valid_count: 0, invalid_count: 0 };
+            } catch (e) {
+                console.error('bcParseRecipients:', e);
+            } finally {
+                this.bcParseLoading = false;
+            }
+        },
+        bcEstimateVariants(s) {
+            // Hitung kemungkinan kombinasi {a|b|c} di pesan.
+            if (!s || !s.includes('{')) return 1;
+            const matches = s.match(/\{([^{}]+)\}/g) || [];
+            return matches.reduce((acc, m) => {
+                const inner = m.slice(1, -1);
+                return acc * (inner.split('|').length);
+            }, 1);
+        },
+        bcEstimateTotalTime() {
+            if (!this.bcParsed.valid_count) return '—';
+            const n = this.bcParsed.valid_count;
+            const avgDelay = (this.bcForm.delay_min_sec + this.bcForm.delay_max_sec) / 2;
+            let totalSec = (n - 1) * avgDelay;
+            if (this.bcForm.batch_size > 0) {
+                const breaks = Math.floor((n - 1) / this.bcForm.batch_size);
+                const avgPause = (this.bcForm.batch_pause_min_sec + this.bcForm.batch_pause_max_sec) / 2;
+                totalSec += breaks * (avgPause - avgDelay);
+            }
+            if (totalSec < 60) return Math.ceil(totalSec) + ' detik';
+            if (totalSec < 3600) return Math.ceil(totalSec / 60) + ' menit';
+            const h = Math.floor(totalSec / 3600);
+            const m = Math.ceil((totalSec - h * 3600) / 60);
+            return h + ' jam ' + m + ' menit';
+        },
+        async submitBroadcast() {
+            this.bcFormError = '';
+            if (!this.bcForm.device_id) { this.bcFormError = 'Pilih device pengirim.'; return; }
+            if (!this.bcParsed.valid_count) { this.bcFormError = 'Tidak ada nomor valid yang ter-parse.'; return; }
+            if (this.bcForm.message_type === 'text' && !this.bcForm.message.trim()) {
+                this.bcFormError = 'Isi pesan kosong.'; return;
+            }
+            if (this.bcForm.message_type !== 'text' && !this.bcForm.media_url.trim()) {
+                this.bcFormError = 'Media URL wajib untuk tipe ' + this.bcForm.message_type + '.'; return;
+            }
+            if (this.bcForm.delay_max_sec < this.bcForm.delay_min_sec) {
+                this.bcFormError = 'Jeda max harus >= jeda min.'; return;
+            }
+            // Konfirmasi akhir untuk volume besar
+            const n = this.bcParsed.valid_count;
+            if (n >= 100) {
+                if (!confirm(`Yakin kirim broadcast ke ${n} nomor? Estimasi waktu: ${this.bcEstimateTotalTime()}.\n\nWhatsApp dapat memban nomor yang dianggap spam — pastikan Anda sudah pakai random delay & shuffle.`)) {
+                    return;
+                }
+            }
+
+            this.bcSubmitting = true;
+            try {
+                const payload = {
+                    name: this.bcForm.name,
+                    device_id: this.bcForm.device_id,
+                    message_type: this.bcForm.message_type,
+                    message: this.bcForm.message,
+                    media_url: this.bcForm.media_url,
+                    recipients: this.bcForm.recipients,
+                    delay_min_ms: this.bcForm.delay_min_sec * 1000,
+                    delay_max_ms: this.bcForm.delay_max_sec * 1000,
+                    batch_size: this.bcForm.batch_size,
+                    batch_pause_min_ms: this.bcForm.batch_pause_min_sec * 1000,
+                    batch_pause_max_ms: this.bcForm.batch_pause_max_sec * 1000,
+                    shuffle_order: this.bcForm.shuffle_order,
+                    start_now: true,
+                };
+                await axios.post('/api/broadcast', payload);
+                alert(`Broadcast dimulai untuk ${n} nomor. Proses berjalan di background — Anda boleh tutup tab ini, broadcast tetap jalan.`);
+                this.bcForm = this.freshBroadcastForm();
+                this.bcParsed = { valid_count: 0, invalid_count: 0 };
+                await this.loadBroadcasts();
+                this.startBroadcastPolling();
+            } catch (e) {
+                this.bcFormError = e.response?.data?.error || e.message;
+            } finally {
+                this.bcSubmitting = false;
+            }
+        },
+        async cancelBroadcast(id) {
+            if (!confirm('Hentikan broadcast? Pesan yang sudah terkirim tidak bisa di-undo.')) return;
+            this.bcCancelling = true;
+            try {
+                await axios.post('/api/broadcast/' + id + '/cancel');
+                await this.loadBroadcasts();
+            } catch (e) {
+                alert('Gagal cancel: ' + (e.response?.data?.error || e.message));
+            } finally {
+                this.bcCancelling = false;
+            }
+        },
+        async deleteBroadcast(id) {
+            if (!confirm('Hapus broadcast ini beserta semua log penerima?')) return;
+            try {
+                await axios.delete('/api/broadcast/' + id);
+                await this.loadBroadcasts();
+            } catch (e) {
+                alert('Gagal hapus: ' + (e.response?.data?.error || e.message));
+            }
+        },
+        bcViewRecipients(b) {
+            this.bcDetailFor = b;
+            this.bcDetailFilter = '';
+            this.bcRecipients = [];
+            this.bcLoadRecipients();
+            this.$nextTick(() => {
+                $('#bc-recipients-modal').modal({
+                    onHide: () => { this.bcDetailFor = null; }
+                }).modal('show');
+                $('#bc-recipients-modal .ui.radio.checkbox').checkbox();
+            });
+        },
+        async bcLoadRecipients() {
+            if (!this.bcDetailFor) return;
+            try {
+                const params = this.bcDetailFilter ? { status: this.bcDetailFilter } : {};
+                const r = await axios.get('/api/broadcast/' + this.bcDetailFor.id + '/recipients', { params });
+                this.bcRecipients = r.data.results || [];
+            } catch (e) {
+                console.error(e);
+            }
+        },
+        bcProgressPercent(b) {
+            if (!b || !b.total) return 0;
+            return Math.round(((b.sent_count + b.failed_count) / b.total) * 100);
+        },
+        bcStatusColor(s) {
+            return {
+                pending: 'grey',
+                running: 'blue',
+                completed: 'green',
+                cancelled: 'orange',
+                failed: 'red',
+            }[s] || 'grey';
+        },
+        bcRecipientStatusColor(s) {
+            return { sent: 'green', failed: 'red', pending: 'grey', skipped: 'orange' }[s] || 'grey';
         },
         async aiListLogs() {
             this.aiLogsLoading = true;
@@ -1450,6 +2919,7 @@ createApp({
                 const r = await axios.get('/api/aireply/logs', { ...this.aiHeaders(), params });
                 this.aiLogs = r.data.results || [];
             } catch (e) {
+                this.aiHandleDisabled(e);
                 this.aiLogs = [];
             } finally {
                 this.aiLogsLoading = false;

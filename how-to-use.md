@@ -13,7 +13,9 @@ Panduan lengkap dari nol — dibuat dengan bahasa sederhana. Bahkan kalau Anda b
 5. [Cara menambah device WhatsApp (scan QR)](#5-cara-menambah-device-whatsapp-scan-qr)
 6. [Cara kirim pesan sekarang juga](#6-cara-kirim-pesan-sekarang-juga)
 7. [Cara membuat jadwal & reminder otomatis](#7-cara-membuat-jadwal--reminder-otomatis)
-8. [Cara melihat riwayat pengiriman](#8-cara-melihat-riwayat-pengiriman)
+7B. [Cara broadcast ke banyak nomor (anti-spam built-in)](#7b-cara-broadcast-ke-banyak-nomor-anti-spam-built-in)
+7C. [Status koneksi ke Core API (badge di kanan atas dashboard)](#7c-status-koneksi-ke-core-api-badge-di-kanan-atas-dashboard)
+8. [Cara melihat riwayat pengiriman + auto-delete logs](#8-cara-melihat-riwayat-pengiriman)
 9. [Cara upgrade ke versi terbaru](#9-cara-upgrade-ke-versi-terbaru)
 10. [Kalau ada masalah (troubleshooting)](#10-kalau-ada-masalah-troubleshooting)
 11. [Cara install pakai Docker (container)](#11-cara-install-pakai-docker-container)
@@ -311,11 +313,137 @@ Di tab **Jadwal & Reminder** ada tabel daftar jadwal dengan ikon-ikon kecil di k
 
 ---
 
+## 7B. Cara broadcast ke banyak nomor (anti-spam built-in)
+
+Klik tab **Broadcast** di dashboard. Cocok untuk: promo, pengumuman ke pelanggan, undangan, dll.
+
+### 7B.1. Isi formulir
+
+1. **Nama broadcast** (opsional) — untuk pengingat Anda di tab Riwayat. Default: `Broadcast YYYY-MM-DD HH:MM`.
+2. **Device pengirim** — pilih nomor WhatsApp yang akan mengirim.
+3. **Tipe pesan** — Text / Gambar / Video / File / Audio.
+4. **Isi pesan** — Anda bisa pakai **spintax** untuk variasi otomatis tiap penerima:
+   - `{Halo|Hai|Hi}` → setiap pesan random pilih satu (Halo / Hai / Hi).
+   - `{Halo|Hai} {kak|bro|sis}` → kombinasi: "Halo kak", "Hai bro", "Halo sis", dst.
+   - Indicator "Estimasi varian" di bawah field nunjukin total kombinasi.
+5. **Daftar nomor tujuan** — paste-friendly. Pisahkan dengan **koma, baris baru, spasi, atau titik-koma**. Format yang diterima:
+   - `6281234567890` (international tanpa +)
+   - `08123456789` (Indonesia local, auto-konversi ke 62…)
+   - `+628123456789` (dengan plus, auto-strip)
+   - `xxxxx@g.us` (JID grup — broadcast ke grup juga bisa)
+   - Duplikat otomatis di-dedupe.
+   - Counter "N nomor valid · M invalid" muncul live saat Anda mengetik.
+   - Klik **▼ Lihat hasil parse** untuk inspect daftar valid/invalid sebelum kirim.
+
+### 7B.2. Pengaturan Anti-Spam (klik "Pengaturan Anti-Spam" untuk ekspansi)
+
+Default sudah aman untuk volume kecil-menengah. Knob yang tersedia:
+
+| Field | Default | Fungsi |
+|---|---|---|
+| Jeda min antar pesan | 8 detik | Minimum delay antar dua kirim. Backend paksa min 3 detik. |
+| Jeda max antar pesan | 25 detik | Maximum delay. Tiap pesan random antara min-max. |
+| Batch size | 0 (nonaktif) | Mis. 30 = istirahat lebih lama setiap 30 pesan. |
+| Pause batch min/max | 120-300 detik | Jeda saat batch break (random di rentang itu). |
+| Acak urutan kirim | ON | Shuffle daftar penerima — hindari pattern alphabet/sequence. |
+
+### 7B.3. Rekomendasi setting per volume
+
+| Volume | Delay | Batch size | Pause batch | Catatan |
+|---|---|---|---|---|
+| <50 nomor | 8-15 dtk | 0 | — | Setting default cukup. |
+| 50-150 nomor | 10-25 dtk | 30 | 120-240 dtk | Batch break mulai aktif. |
+| 150-500 nomor | 15-40 dtk | 25 | 180-360 dtk | Hati-hati, sebar ke beberapa hari kalau bisa. |
+| >500 nomor | — | — | — | **Jangan dalam sehari**. Pecah per hari, atau pakai WhatsApp Business API resmi. |
+
+### 7B.4. Kirim & monitor
+
+1. Klik **Kirim Broadcast (N nomor)**. Kalau N ≥ 100, dashboard tampilkan konfirmasi dengan estimasi waktu.
+2. Setelah klik, broadcast langsung jalan di **background** — Anda boleh tutup tab browser, broadcast tetap berjalan di server.
+3. Banner biru di atas form akan tampil dengan **progress bar live** (refresh tiap 3 detik): `X terkirim · Y gagal · dari N total`.
+4. Klik **Hentikan Broadcast** untuk cancel (pesan yang sudah terkirim tidak bisa di-undo).
+5. Setelah selesai, broadcast pindah ke tabel **Riwayat Broadcast** di bawah.
+
+### 7B.5. Inspect detail per penerima
+
+Klik ikon **list** di kolom Aksi pada baris broadcast. Modal muncul dengan filter Status (Semua / Pending / Terkirim / Gagal). Penerima yang gagal kelihatan error message-nya — biasanya:
+
+- `recipient not on WhatsApp` — nomor tidak terdaftar di WA.
+- `rate limited` — kena throttle WhatsApp; coba lagi dengan delay lebih panjang.
+- `not connected` — device disconnect saat broadcast.
+
+### 7B.6. Tips menghindari banned WhatsApp
+
+- **Jangan kirim ke nomor yang tidak pernah chat duluan**. Banyak "unknown number" = trigger antispam WA paling cepat.
+- **Random delay wajib**. Backend dashboard memaksa min 3 detik antar pesan, tapi 8-25 detik jauh lebih aman.
+- **Variasikan pesan** dengan spintax. Pesan identik ke ratusan nomor = pattern detection langsung kena.
+- **Batas aman tidak resmi**:
+  - Nomor WA baru: ≤200 pesan/hari, ≤50 ke nomor unknown.
+  - Nomor WA lama (>3 bulan aktif): ≤500 pesan/hari.
+  - Nomor WA Business verified: lebih tinggi, tapi tetap hati-hati.
+- **Hindari URL pendek/suspicious**. WhatsApp scan link, kalau ke domain bermasalah pesan di-shadow ban.
+- **Untuk produksi serius**: pakai [WhatsApp Business API resmi](https://business.whatsapp.com/products/business-platform) (Meta) — biaya per pesan, tapi tidak ada risiko banned.
+
+---
+
+## 7C. Status koneksi ke Core API (badge di kanan atas dashboard)
+
+Di pojok kanan atas dashboard ada **pill berwarna** yang menunjukkan status real-time ke Core API. Pill ini auto-poll tiap **30 detik**, jadi tidak perlu refresh halaman. Hover untuk tooltip detail (URL, latency, timestamp last check, error message kalau ada). Klik pill untuk re-check langsung.
+
+| State | Warna | Arti |
+|---|---|---|
+| **API Core Connected** | hijau ✓ | Core merespons normal. Latency dalam ms ditampilkan di samping label. |
+| **Mengecek API Core...** | abu-abu (spinner) | Sedang ping core. Tampil saat awal load atau setelah klik re-check. |
+| **API Core Disconnected** | merah ✗ | Core tidak respond / network error / 5xx. Hover untuk lihat error message. |
+
+> Kalau pill merah terus, biasanya: container `gowa-core` mati (`docker compose ... ps`) atau `WHATSAPP_API_URL` di `dashboard/.env` salah arah (harus `http://whatsapp_go:3000` di Docker).
+
+---
+
 ## 8. Cara melihat riwayat pengiriman
 
 Klik tab **Riwayat**. Anda akan lihat daftar semua pengiriman otomatis terakhir — sukses (hijau) atau gagal (merah). Kalau gagal, kolom "Detail" akan menampilkan penyebabnya (misal nomor salah, device disconnect, dll).
 
 Untuk riwayat **per jadwal**: di tab Jadwal, klik ikon 📃 di baris jadwal.
+
+### 8.1. Panel "Auto-Delete Logs" (di atas tabel Riwayat)
+
+Untuk jaga ukuran `dashboard.db` tidak terus membengkak, dashboard punya **auto-cleanup** yang berjalan otomatis di background. Klik tombol ikon **database** di kanan atas tab Riwayat untuk lihat panel info, atau tombol ↻ di dalam panel untuk reload.
+
+Panel menampilkan:
+
+- **Status auto-cleanup** (AKTIF/NONAKTIF) — tergantung env `DASHBOARD_LOG_RETENTION_DAYS`.
+- **Retention period** — default 30 hari. Log lebih lama dari ini di-hapus dari tanggal paling lama.
+- **Row count** untuk setiap tabel: `schedules`, `schedule_logs`, `broadcasts`, `broadcast_recipients`.
+
+Tombol-tombol:
+
+- **Jalankan Cleanup Sekarang** — manual trigger pakai retention default.
+- Dropdown **7 / 14 / 30 / 60 / 90 / 180 / 365 hari** + tombol **Hapus > N hari** — manual override untuk pembersihan agresif (mis. mau bersihkan ke 7 hari saja).
+
+Cleanup yang dihapus:
+
+- `schedule_logs.ran_at < cutoff` (semua log eksekusi jadwal lama).
+- `broadcasts.finished_at < cutoff` (broadcasts yang sudah selesai — completed/cancelled/failed). Broadcast yg masih **running** atau **pending** TIDAK pernah dihapus apa pun umurnya.
+- `broadcast_recipients` ikut terhapus otomatis (FK CASCADE).
+- Kalau > 500 row dihapus dalam satu sweep, otomatis `VACUUM` untuk reclaim disk space.
+
+### 8.2. Konfigurasi retention via .env
+
+Di `dashboard/.env`:
+
+```env
+DASHBOARD_LOG_RETENTION_DAYS=30      # 0 = nonaktif (UI manual cleanup tetap bisa)
+DASHBOARD_CLEANUP_INTERVAL_HOURS=6   # interval background worker (min 1)
+```
+
+Setelah ubah:
+
+```bash
+docker compose -f docker-compose.aapanel.yml restart dashboard
+docker compose -f docker-compose.aapanel.yml logs --tail=20 dashboard | grep retention
+# Harus muncul: [main] log retention enabled: 30 days, cleanup every 6 hour(s)
+```
 
 ---
 
@@ -713,6 +841,13 @@ Dua-duanya harus return `HTTP/1.1 200 OK` (atau 302/404 — yang penting bukan "
 
 Saatnya bikin URL publik yang cantik (`https://wa.namadomainsaya.com`) yang otomatis menghantar ke dashboard di port 18088.
 
+> ⚠️ **Penting — baca dulu sebelum lanjut**: aaPanel UI "Add reverse proxy" punya **dua bug** yang sering bikin "Tambah Device" gagal dengan `404 Cannot POST`:
+>
+> 1. Bisa tambah **trailing slash** di `proxy_pass http://127.0.0.1:18088/;` — bikin nginx me-rewrite URI.
+> 2. Bisa naruh **target URL sebagai `Host` header** (`proxy_set_header Host http://127.0.0.1:18088;`) — padahal harusnya `$host`. Engine Fiber dashboard parse URL aneh karena Host malformed.
+>
+> Cuma satu dari dua sudah cukup bikin gagal. Kalau Anda tidak mau debug nginx sama sekali, **lewatin UI aaPanel dan pakai auto-installer di section 12.5.1**. Cuma satu perintah, langsung benar.
+
 **Untuk dashboard (port 18088):**
 
 1. aaPanel → menu kiri **Website** → klik **Add site**.
@@ -721,14 +856,86 @@ Saatnya bikin URL publik yang cantik (`https://wa.namadomainsaya.com`) yang otom
    - **Root directory**: biarkan default
    - **PHP version**: pilih **Pure static** (tidak butuh PHP)
 3. Klik **Submit**.
-4. Setelah dibuat, klik baris domain tersebut → tab **Reverse proxy** → **Add reverse proxy**:
-   - **Proxy name**: `dashboard`
-   - **Target URL**: `http://127.0.0.1:18088`
-   - **Send domain**: biarkan (defaultnya mengikuti domain).
-   - Klik **Submit**.
+4. **Skip tab "Reverse proxy" di UI aaPanel** — kita pasang config nginx sendiri yang sudah dijamin benar (lihat 12.5.1).
 5. Aktifkan **SSL gratis**: di domain yang sama → tab **SSL** → **Let's Encrypt** → pilih domain → **Apply**. Tunggu sampai sukses. Aktifkan **Force HTTPS**.
 
+> Kalau Anda tetap mau pakai UI "Add reverse proxy": isi **Target URL `http://127.0.0.1:18088` tanpa `/` di akhir**, submit, lalu buka tab **Config file**, dan **edit baris `proxy_set_header Host`** supaya nilainya `$host` (bukan `http://127.0.0.1:18088`). Atau jalanin auto-installer di 12.5.1 yang otomatis benerin dua-duanya.
+
+### 12.5.1. Install config nginx yang sudah teruji (satu perintah)
+
+Cara paling cepat & paling jaminan benar:
+
+```bash
+cd /www/wwwroot/gowa     # sesuaikan path repo Anda
+chmod +x scripts/aapanel-install-nginx.sh
+sudo sh scripts/aapanel-install-nginx.sh wa.namadomainsaya.com
+```
+
+Script ini akan:
+
+1. Backup config lama (`.bak.YYYYMMDD-HHMMSS`).
+2. Replace blok `location /` di config nginx aaPanel pakai blok yang sudah dijamin tanpa dua bug di atas — `proxy_pass` tanpa trailing slash + `Host $host` yang benar.
+3. Validasi syntax + reload nginx.
+4. Otomatis rollback ke backup kalau syntax invalid.
+
 Buka browser → `https://wa.namadomainsaya.com` → dashboard muncul dengan SSL. 🎉
+
+### 12.5.2. Verifikasi setup end-to-end (wajib dijalankan setelah deploy)
+
+Setelah reverse proxy + SSL aktif, jalankan script verifikasi di Terminal aaPanel:
+
+```bash
+cd /www/wwwroot/gowa     # sesuaikan kalau lokasinya lain
+sh scripts/aapanel-check.sh https://wa.namadomainsaya.com
+```
+
+Kalau dashboard pakai basic auth (`DASHBOARD_BASIC_AUTH` di `dashboard/.env`), tambahkan kredensial:
+
+```bash
+AUTH=user:pass sh scripts/aapanel-check.sh https://wa.namadomainsaya.com
+```
+
+Script ini cek 3 hal:
+- Kedua container running.
+- Dashboard merespons benar di `127.0.0.1:18088` (bypass nginx).
+- Public URL Anda merespons identik — termasuk **POST request** yang sensitif ke trailing-slash bug.
+
+Kalau muncul **"deteksi: nginx reverse proxy aaPanel salah konfigurasi"**, lanjut ke 12.5.3.
+
+### 12.5.3. Fix kalau POST gagal (Tambah Device 404)
+
+**Cara tercepat — pakai auto-installer:**
+
+```bash
+sudo sh scripts/aapanel-install-nginx.sh wa.namadomainsaya.com
+sh scripts/aapanel-check.sh https://wa.namadomainsaya.com    # verify
+```
+
+**Atau manual via aaPanel UI:**
+
+1. **Website → klik domain → tab Config file**.
+2. Cari blok `location /` atau `location ^~ /` yang ada `proxy_pass`.
+3. Pastikan dua hal:
+
+   ```nginx
+   # ✓ BENAR
+   proxy_pass http://127.0.0.1:18088;             # tanpa / di akhir
+   proxy_set_header Host $host;                    # Host = hostname klien
+   ```
+
+   ```nginx
+   # ✗ SALAH (default aaPanel UI sering kayak gini)
+   proxy_pass http://127.0.0.1:18088/;            # ada / -> path ke-strip
+   proxy_set_header Host http://127.0.0.1:18088;  # Host malformed -> Fiber gagal route
+   ```
+
+4. Klik **Save**. aaPanel reload nginx otomatis.
+5. Re-run `sh scripts/aapanel-check.sh https://wa.namadomainsaya.com` — harus semua hijau.
+
+> **Kenapa dua-duanya jadi masalah?**
+>
+> - **Trailing slash di `proxy_pass`**: dengan `/` di akhir, nginx me-rewrite URI yang match `location`-nya. Untuk `location /` + `proxy_pass http://host:port/`, hasilnya path kosong di upstream. Tanpa slash, URI dilewatkan apa adanya. Detail: [nginx docs proxy_pass](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass).
+> - **Host header salah**: kalau `Host` di-set ke URL upstream (mengandung `://` dan port), engine HTTP upstream (fasthttp di Fiber) parse-nya secara aneh karena bukan format Host yang valid (RFC 7230 §5.4 — Host = host[:port], TANPA scheme). Akibatnya routing internal mismatch dan request fallthrough ke 404.
 
 **Untuk halaman scan QR (port 13000)** — boleh ditambahkan subdomain terpisah:
 
@@ -764,6 +971,8 @@ Selalu dari folder `/www/wwwroot/gowa`:
 | Stop semua | `docker compose -f docker-compose.aapanel.yml stop` |
 | Stop + hapus container (data aman) | `docker compose -f docker-compose.aapanel.yml down` |
 | Update kode + rebuild | `git pull && docker compose -f docker-compose.aapanel.yml up -d --build` |
+| Install / re-install config nginx yang benar | `sudo sh scripts/aapanel-install-nginx.sh wa.domainsaya.com` |
+| Verifikasi setup end-to-end | `sh scripts/aapanel-check.sh https://wa.domainsaya.com` |
 
 ### 12.8. Backup data di aaPanel
 
@@ -806,6 +1015,26 @@ curl -I http://127.0.0.1:18088
 
 Kalau "Connection refused" → container mati, jalankan lagi `docker compose -f docker-compose.aapanel.yml up -d`. Kalau 200 → masalahnya di setting reverse proxy aaPanel, cek angka port-nya.
 
+#### ❌ "Tambah Device" gagal: `Request failed with status code 404` / `Cannot POST` / `Cannot use import statement outside a module`
+
+Tiga gejala ini biasanya bareng — penyebabnya **reverse proxy aaPanel salah**. Tiga kemungkinan:
+
+1. **Target URL salah** — mis. masih nunjuk ke `127.0.0.1:13000` (core), bukan `18088` (dashboard). Konsekuensi: browser dapat HTML core yang pakai `<script type="module">`, browser tolak load karena MIME salah → "Cannot use import statement outside a module". Dan core tidak punya `/api/devices` → 404.
+
+2. **Trailing slash di `proxy_pass`** — aaPanel kadang generate `proxy_pass http://127.0.0.1:18088/;` (dengan `/`). Ini bikin nginx rewrite URI sehingga POST `/api/devices` jadi path kosong di upstream → dashboard return `404 Cannot POST `.
+
+3. **Host header salah** — aaPanel UI taruh **target URL** sebagai nilai `Host` header (`proxy_set_header Host http://127.0.0.1:18088;`), padahal harusnya `$host`. Fasthttp di dashboard parse URL aneh karena Host malformed → routing miss → 404.
+
+Auto-fix (perbaiki ketiganya sekaligus):
+
+```bash
+cd /www/wwwroot/gowa
+sudo sh scripts/aapanel-install-nginx.sh wa.namadomainsaya.com
+sh scripts/aapanel-check.sh https://wa.namadomainsaya.com    # verify
+```
+
+Manual: ikuti [section 12.5.3](#1253-fix-kalau-post-gagal-tambah-device-404) — perhatikan dua-duanya, `proxy_pass` tanpa slash DAN `Host $host`.
+
 #### ❌ Container Docker lain jadi error setelah saya install gowa
 
 Tidak mungkin terjadi dengan compose ini — karena saya pakai **network terpisah** (`gowa-private`), **container name unik** (`gowa-*`), dan **port loopback only**. Kalau memang terjadi, kemungkinan koincidensi (mis. resource server penuh). Cek RAM dan disk dengan `free -h` dan `df -h` di Terminal.
@@ -825,6 +1054,232 @@ docker compose -f docker-compose.aapanel.yml up -d --build
 ```
 
 Versi Dockerfile terbaru sudah otomatis chown lewat `entrypoint.sh`, jadi pastikan Anda **rebuild image** dengan `--build` di akhir. Setelah rebuild, masalah ini tidak akan terulang.
+
+#### ❌ "AI_ENCRYPTION_KEY must be hex" / "encoding/hex: invalid byte"
+
+Error ini muncul kalau `AI_ENCRYPTION_KEY` di core tidak valid hex 64-karakter. Sering kejadian saat user salah set passphrase manual (mis. `AI_ENCRYPTION_KEY=my-secret-password`) di `src/.env`. AES-GCM butuh **persis 64 karakter dari 0-9 dan a-f**.
+
+##### Priority resolution di entrypoint (baru, lebih aman)
+
+Mulai dari versi entrypoint terbaru, urutan prioritas key adalah:
+
+1. **Keyfile** `storages/.ai-encryption-key` — **paling tinggi**. Ini yang dipakai untuk encrypt API key provider yang sudah tersimpan di SQLite, jadi keyfile adalah "source of truth" supaya data lama tidak corrupt.
+2. **Env var** `AI_ENCRYPTION_KEY` di `src/.env` — cuma dipakai sebagai **bootstrap awal** (kalau keyfile belum ada). Pertama kali boot, env value disimpan ke keyfile, lalu di boot berikutnya keyfile yang menang.
+3. **Auto-generate** — fallback kalau keduanya kosong/invalid.
+
+**Konsekuensi praktis:**
+
+- Kalau Anda set env var, lalu boot pertama → env dipakai DAN otomatis copy ke keyfile. Aman.
+- Kalau Anda ganti env var di boot berikutnya → **diabaikan**. Keyfile menang. Log akan munculkan `NOTE: AI_ENCRYPTION_KEY env var ≠ keyfile content. Pakai keyfile...`.
+- Mau **rotate key** beneran (mis. key bocor)? Harus eksplisit:
+  ```bash
+  docker compose -f docker-compose.aapanel.yml stop whatsapp_go
+  rm storages/.ai-encryption-key
+  # set AI_ENCRYPTION_KEY baru di src/.env (atau biarkan kosong supaya auto-gen)
+  docker compose -f docker-compose.aapanel.yml up -d whatsapp_go
+  ```
+  **Catatan**: rotate = semua API key provider yang sudah tersimpan di SQLite jadi unreadable. User harus input ulang via dashboard AI Reply tab.
+
+##### Fix tercepat kalau Anda kena error hex sekarang
+
+Biarkan entrypoint auto-generate (recommended):
+
+```bash
+cd /www/wwwroot/gowa.hafizridha.com/gowa-dashboard-main
+
+# 1. Hapus / kosongkan baris AI_ENCRYPTION_KEY di src/.env (entrypoint akan handle)
+sed -i 's|^AI_ENCRYPTION_KEY=.*|AI_ENCRYPTION_KEY=|' src/.env
+
+# 2. Rebuild & restart core supaya entrypoint baru jalan
+docker compose -f docker-compose.aapanel.yml up -d --build whatsapp_go
+
+# 3. Verifikasi entrypoint pakai key valid (cek log)
+docker compose -f docker-compose.aapanel.yml logs --tail=20 whatsapp_go | grep -i AI_ENCRYPTION
+# Harus muncul salah satu dari ini:
+#   [entrypoint] Generated new AI_ENCRYPTION_KEY -> /app/storages/.ai-encryption-key
+#   [entrypoint] AI_ENCRYPTION_KEY: abcd…1234 (64 hex chars, source: generated)
+# atau (kalau keyfile sudah ada dari boot sebelumnya):
+#   [entrypoint] AI_ENCRYPTION_KEY: abcd…1234 (64 hex chars, source: keyfile)
+
+# 4. Backup keyfile — kalau hilang, semua API key tersimpan jadi unreadable
+cp storages/.ai-encryption-key ~/gowa-ai-key-$(date +%Y%m%d).bak
+chmod 600 ~/gowa-ai-key-*.bak
+```
+
+##### API key provider (form) vs encryption key (env/keyfile) — beda
+
+Untuk menghindari kebingungan: **dua key yang berbeda**:
+
+| Yang mana | Format | Sumber | Fungsi |
+|---|---|---|---|
+| `AI_ENCRYPTION_KEY` | 64-char hex | `src/.env` atau auto-gen di keyfile | Master key AES-GCM untuk encrypt-at-rest provider key di SQLite. Set sekali, jangan diutak-atik. |
+| `api_key` (form di tab AI Reply) | provider-specific (mis. `sk-...` untuk OpenAI, `sk-ant-...` untuk Claude) | User input via dashboard form | Authentication ke LLM provider. Bisa di-update kapan saja via form. |
+
+**Behavior form api_key:**
+
+- Field kosong saat save → core **pertahankan** key yang sudah tersimpan (indicator masked `sk-v****Aw5A` di samping label menunjukkan key tersimpan).
+- Field terisi saat save → core **ganti** dengan nilai baru, encrypt pakai `AI_ENCRYPTION_KEY` saat ini, simpan ke DB.
+- Indicator masked otomatis update setelah save sukses.
+
+Dashboard juga sekarang detect error pattern `AI_ENCRYPTION_KEY` dan tampilkan banner merah dengan instruksi fix, bukan toast generic.
+
+#### ❌ Test Connection error: "upstream POST /aireply/config/test -> 502: config not set"
+
+Endpoint Test di core membaca config dari **database**, bukan dari body request. Kalau Anda klik **Test Connection** sebelum pernah klik **Simpan**, core nolak dengan `config not set` karena memang belum ada row config untuk device tsb.
+
+**Sudah ada auto-fix di dashboard** — klik Test Connection sekarang otomatis melakukan **save dulu** (ke device aktif) lalu test. Jadi alur:
+
+1. Isi field provider, model, API key, dll.
+2. Klik **Test Connection** → dashboard auto-save → kirim test request ke provider → tampilkan latensi + sample response.
+
+Kalau masih dapat `config not set` setelah update dashboard:
+- Pastikan **provider** dan **model** sudah terisi di form (Test akan refuse kalau dua field ini kosong).
+- Cek log dashboard apakah auto-save gagal: `docker compose -f docker-compose.aapanel.yml logs --tail=30 dashboard`.
+- Kalau auto-save dapat 503 `AI_REPLY_DISABLED`, ikuti instruksi di section troubleshoot AI Reply 404 di bawah.
+
+#### 💡 Pause Semua Auto Reply (sementara, semua device)
+
+Saat liburan / meeting / acara, Anda mungkin perlu **mematikan AI Reply + static auto-reply sementara** di seluruh device tanpa harus matikan via env var (yang butuh container restart).
+
+Cara:
+
+1. Buka tab **AI Reply** di dashboard. Banner kuning "Pause Semua Auto Reply" muncul di atas.
+2. Pilih durasi di dropdown: 15 menit / 1 jam / 4 jam / 8 jam / 24 jam / **Indefinite**.
+3. Klik **Pause [durasi]** → konfirmasi.
+4. Banner berubah jadi **merah** dengan countdown sisa waktu + tombol **Resume Sekarang**.
+
+Selama paused:
+- AI Reply tidak fire di device manapun, untuk chat manapun.
+- Static `WHATSAPP_AUTO_REPLY` juga **suppressed** (Service claim ownership via `IsPaused()` check).
+- Pesan masuk tetap diterima & disimpan di chat history; cuma balasan otomatisnya yang ditahan.
+- Klik **Resume Sekarang** untuk cabut pause kapan saja sebelum deadline.
+
+Behavior aman:
+- State pause disimpan **in-memory di core**. Container restart = auto-resume (sengaja, supaya tidak ada "pause selamanya yang terlupa").
+- "Indefinite" sebenarnya 100 tahun (clamped) — kalau benar-benar perlu permanent disable, set `AI_REPLY_ENABLED=false` di `src/.env`.
+- Polling pause status setiap 30 detik saat tab AI Reply terbuka — banner refresh otomatis kalau di-trigger dari client lain (mis. curl).
+
+Dari curl:
+```bash
+# Pause 1 jam
+curl -X POST -u hakz:ueuwop18cm \
+  -H "X-Device-Id: device-alpha" -H "Content-Type: application/json" \
+  -d '{"minutes":60}' \
+  https://gowa.hafizridha.com/api/aireply/pause
+
+# Cek status
+curl -u hakz:ueuwop18cm -H "X-Device-Id: device-alpha" \
+  https://gowa.hafizridha.com/api/aireply/pause-status
+# → {"results":{"paused":true,"paused_until":"2026-05-16T15:30:00Z","remaining_seconds":3580}}
+
+# Resume manual
+curl -X POST -u hakz:ueuwop18cm -H "X-Device-Id: device-alpha" \
+  https://gowa.hafizridha.com/api/aireply/resume
+```
+
+#### 💡 Disable AI untuk satu chat = silent total (tidak ada balasan apa-apa)
+
+Mulai dari versi terbaru, chat-toggle punya **tiga state**:
+
+| State | Behavior |
+|---|---|
+| **Tidak ada row** (chat tidak pernah didaftarkan di tab Chat Toggle) | AI Reply skip. Static auto-reply (`WHATSAPP_AUTO_REPLY` di `src/.env`) tetap fire. |
+| **Row enabled = ON** | AI Reply jalan. Static auto-reply skip. |
+| **Row enabled = OFF** | **AI dan static dua-duanya skip** — explicit opt-out. Pakai untuk silent total ke chat tertentu. |
+
+Sebelumnya `OFF` cuma matikan AI tapi static `Auto reply message` tetap nyangkut — confusing. Sekarang `OFF` = "user explicitly told us no reply" sehingga dispatcher di [event_message_handler.go](src/infrastructure/whatsapp/event_message_handler.go) skip static.
+
+Kalau Anda mau static auto-reply mati untuk SEMUA chat (bukan per-chat), kosongkan env:
+```bash
+# di src/.env
+WHATSAPP_AUTO_REPLY=
+# lalu
+docker compose -f docker-compose.aapanel.yml restart whatsapp_go
+```
+
+#### 💡 Mau AI Auto-Reply jalan di semua nomor sekaligus
+
+Sebelumnya AI Reply config & chat-toggle hanya tersimpan per-device (per nomor WhatsApp). Sekarang ada toggle **"Apply ke semua device terhubung"** di tab **AI Reply**:
+
+1. **Config tab — toggle "Apply config & chat-toggles ke semua N device"** (recommended):
+   Setelah edit provider/model/system prompt/dst, centang toggle kuning di bawah form. Klik **Simpan ke Semua Device** → dashboard akan **dua hal sekaligus**:
+   - Save config (provider, model, API key, prompt) ke seluruh device logged-in
+   - **Replicate semua chat-toggle** dari device sumber ke device lain
+   
+   Step kedua **wajib** supaya device 2-dst BENAR-BENAR balas otomatis. Tanpa chat-toggle row, core silent-skip (gating: "no chat-setting row for this chat" — lihat [CLAUDE.md](./CLAUDE.md)).
+
+2. **Chat Toggle tab** — sama, ada toggle *"Apply ke semua N device terhubung"* untuk add/toggle satu chat JID di seluruh device sekaligus. Berguna untuk menambah chat baru tanpa harus pakai jalur Config sync.
+
+Toggle ini cuma muncul kalau ada **≥ 2 device** logged-in (kalau cuma 1 device, tidak ada gunanya).
+
+##### Kenapa device 2 tidak balas otomatis padahal "Apply to all" sudah dicentang?
+
+**Cara tercepat: pakai Health Check** — di tab AI Reply → Config tab, klik tombol **"Cek Semua Device"** di panel "Multi-Device Health Check" (muncul kalau ≥2 device logged-in). Akan tampilkan tabel per-device dengan status: ✓ ready / no_config / no_api_key / no_chats. Setiap status punya hint actionable, jadi langsung tahu device mana yang misconfigured.
+
+Gating AI Reply di core ada 5 layer ([CLAUDE.md](./CLAUDE.md) "AI Reply gating"). Yang paling sering kena di multi-device:
+
+1. **Tidak ada chat-setting row untuk chat JID di device kedua**. Bug lama: Config apply-to-all hanya copy config, bukan chat-settings. **Sudah di-fix** — sekarang Config apply-to-all otomatis replicate chat-settings juga.
+2. **API key encrypted empty di device kedua** (silent fail paling jahat). Core's `Decrypt([]byte{}) → ("", nil)` — tidak return error → service lanjut dengan empty key → LLM call 401 → log status `error` tanpa visible message. **Sudah di-fix dengan pre-flight check** + Health Check sekarang detect "no_api_key" status. Solusi: isi field API key sekali waktu apply-to-all.
+3. **Rate limit 3s/chat hit**. Default rate limit `AI_RATE_LIMIT_SECONDS=3` per chat. Kalau pesan masuk berurutan cepat, ke-2 di-skip dengan status `rate_limited`. Cek tab AI Reply → Logs.
+
+Health Check endpoint (untuk audit dari curl):
+
+```bash
+curl -u hakz:ueuwop18cm \
+  -H "X-Device-Id: device-alpha" \
+  https://gowa.hafizridha.com/api/aireply/multi-device-health
+# Returns: {overall: "all_ready|partial|none_ready", ready_count, total_devices,
+#           results: [{device_id, has_config, has_api_key, chat_enabled_count,
+#                      provider, model, status, hint}, ...]}
+```
+
+Lihat juga alur lengkap di tab **AI Reply → Logs** — kalau device 2 ada event masuk tapi status `rate_limited`/`error` atau tidak ada log sama sekali, itu indikator masalahnya.
+
+##### API key handling saat apply-to-all:
+- Field API key **terisi** → key tersebut dipakai untuk semua device.
+- Field API key **kosong** → tiap device mempertahankan key yg sudah tersimpan (gagal kalau device tsb belum pernah disimpan keynya).
+
+##### Dari curl
+
+```bash
+# Config + chat-settings replication (default: with_chats=true)
+curl -X POST https://gowa.hafizridha.com/api/aireply/config/apply-to-all \
+  -u hakz:ueuwop18cm \
+  -H "X-Device-Id: device-alpha" \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"openai_compatible","model":"gpt-4o-mini","api_key":"sk-...",...}'
+
+# Cuma config, skip chat-settings sync
+curl -X POST "https://gowa.hafizridha.com/api/aireply/config/apply-to-all?with_chats=false" ...
+```
+
+Response body sekarang punya field `chat_sync` dengan ringkasan: `source_chats`, `target_devices`, `applied_ok`, `applied_fail`. Cek itu setelah panggil endpoint untuk verifikasi replikasi sukses.
+
+#### ❌ Tab AI Reply error: "Gagal load AI config: upstream GET /aireply/config -> 404"
+
+Itu **bukan** masalah reverse proxy — itu indikasi fitur AI Reply belum aktif di core. Dengan entrypoint baru, default seharusnya sudah `AI_REPLY_ENABLED=true` dan `AI_ENCRYPTION_KEY` auto-generated di `storages/.ai-encryption-key`. Kalau Anda masih dapat error ini, kemungkinan:
+
+1. **Container core masih image lama** — rebuild:
+   ```bash
+   docker compose -f docker-compose.aapanel.yml up -d --build whatsapp_go
+   ```
+
+2. **`src/.env` Anda eksplisit set `AI_REPLY_ENABLED=false`** — edit dan ubah jadi `true` (atau hapus baris itu supaya entrypoint default kick-in), lalu restart:
+   ```bash
+   docker compose -f docker-compose.aapanel.yml restart whatsapp_go
+   ```
+
+3. **Cek key file ada di volume**:
+   ```bash
+   ls -la storages/.ai-encryption-key
+   # kalau tidak ada, restart core supaya entrypoint generate ulang:
+   docker compose -f docker-compose.aapanel.yml restart whatsapp_go
+   docker compose -f docker-compose.aapanel.yml logs --tail=20 whatsapp_go | grep AI_ENCRYPTION
+   ```
+
+> **Penting backup**: file `storages/.ai-encryption-key` adalah **satu-satunya** cara men-decrypt API key provider yang tersimpan di SQLite. Hilang/diganti = semua API key tersimpan jadi unreadable. Backup terpisah!
+
+Dashboard versi terbaru akan menampilkan **banner berwarna merah** dengan tombol "Sudah saya aktifkan, coba lagi" di tab AI Reply kalau core return `AI_REPLY_DISABLED`, jadi error UX-nya jauh lebih jelas dari sebelumnya yang cuma toast "Gagal load AI config".
 
 #### ❌ Lupa password basic auth halaman QR
 

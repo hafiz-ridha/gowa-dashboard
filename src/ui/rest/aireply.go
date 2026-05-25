@@ -4,6 +4,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -31,6 +32,11 @@ func InitRestAIReply(app fiber.Router, service *aireplyUC.Service) AIReply {
 	app.Get("/aireply/chat-settings", r.ListChatSettings)
 	app.Put("/aireply/chat-settings/:chat_jid", r.SetChatEnabled)
 	app.Get("/aireply/logs", r.ListLogs)
+	// Global pause toggle — affects all devices + all chats. State in-memory
+	// only (resets on container restart, intentional safety).
+	app.Post("/aireply/pause", r.Pause)
+	app.Post("/aireply/resume", r.Resume)
+	app.Get("/aireply/pause-status", r.PauseStatus)
 	return r
 }
 
@@ -130,6 +136,43 @@ func (h *AIReply) SetChatEnabled(c *fiber.Ctx) error {
 	utils.PanicIfNeeded(c.BodyParser(&req))
 	utils.PanicIfNeeded(h.Service.SetChatEnabled(c.UserContext(), mustDevice(c), jid, req.Enabled))
 	return c.JSON(utils.ResponseData{Status: 200, Code: "SUCCESS", Message: "updated"})
+}
+
+// Pause AI Reply globally. Body: {"minutes": 30}. minutes <= 0 = indefinite
+// (until next container restart or explicit Resume). Returns deadline.
+func (h *AIReply) Pause(c *fiber.Ctx) error {
+	var req struct {
+		Minutes int `json:"minutes"`
+	}
+	_ = c.BodyParser(&req)
+	duration := time.Duration(req.Minutes) * time.Minute
+	until := aireplyUC.Pause(duration)
+	return c.JSON(utils.ResponseData{
+		Status: 200, Code: "SUCCESS",
+		Results: fiber.Map{
+			"paused":           true,
+			"paused_until":     until,
+			"duration_minutes": req.Minutes,
+		},
+	})
+}
+
+func (h *AIReply) Resume(c *fiber.Ctx) error {
+	aireplyUC.Resume()
+	return c.JSON(utils.ResponseData{
+		Status: 200, Code: "SUCCESS",
+		Results: fiber.Map{"paused": false},
+	})
+}
+
+func (h *AIReply) PauseStatus(c *fiber.Ctx) error {
+	paused, until := aireplyUC.PauseStatus()
+	res := fiber.Map{"paused": paused}
+	if until != nil {
+		res["paused_until"] = until
+		res["remaining_seconds"] = int(time.Until(*until).Seconds())
+	}
+	return c.JSON(utils.ResponseData{Status: 200, Code: "SUCCESS", Results: res})
 }
 
 func (h *AIReply) ListLogs(c *fiber.Ctx) error {
