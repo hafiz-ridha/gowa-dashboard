@@ -32,8 +32,9 @@ func InitRestAIReply(app fiber.Router, service *aireplyUC.Service) AIReply {
 	app.Get("/aireply/chat-settings", r.ListChatSettings)
 	app.Put("/aireply/chat-settings/:chat_jid", r.SetChatEnabled)
 	app.Get("/aireply/logs", r.ListLogs)
-	// Global pause toggle — affects all devices + all chats. State in-memory
-	// only (resets on container restart, intentional safety).
+	// Global pause toggle — affects all devices + all chats. State persists
+	// in ai_pause_state (survives container restart) until explicit Resume
+	// or natural deadline expiry.
 	app.Post("/aireply/pause", r.Pause)
 	app.Post("/aireply/resume", r.Resume)
 	app.Get("/aireply/pause-status", r.PauseStatus)
@@ -139,14 +140,14 @@ func (h *AIReply) SetChatEnabled(c *fiber.Ctx) error {
 }
 
 // Pause AI Reply globally. Body: {"minutes": 30}. minutes <= 0 = indefinite
-// (until next container restart or explicit Resume). Returns deadline.
+// (until explicit Resume — persists across restarts). Returns deadline.
 func (h *AIReply) Pause(c *fiber.Ctx) error {
 	var req struct {
 		Minutes int `json:"minutes"`
 	}
 	_ = c.BodyParser(&req)
 	duration := time.Duration(req.Minutes) * time.Minute
-	until := aireplyUC.Pause(duration)
+	until := aireplyUC.Pause(c.UserContext(), duration)
 	return c.JSON(utils.ResponseData{
 		Status: 200, Code: "SUCCESS",
 		Results: fiber.Map{
@@ -158,7 +159,7 @@ func (h *AIReply) Pause(c *fiber.Ctx) error {
 }
 
 func (h *AIReply) Resume(c *fiber.Ctx) error {
-	aireplyUC.Resume()
+	aireplyUC.Resume(c.UserContext())
 	return c.JSON(utils.ResponseData{
 		Status: 200, Code: "SUCCESS",
 		Results: fiber.Map{"paused": false},

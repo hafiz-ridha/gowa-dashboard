@@ -1,0 +1,38 @@
+# Compose KHUSUS dashboard — TIDAK menyertakan gowa-core sama sekali.
+#
+# Pakai file ini kalau gowa-core sudah/akan di-install & di-update terpisah
+# (server lain, versi lain, non-Docker, atau memang cuma mau kelola dashboard
+# tanpa ikut siklus rebuild core). Update core (docker-compose.yml di server
+# core, atau `git pull` upstream) tidak akan pernah menyentuh container ini.
+#
+# Core URL + credential di bawah HANYA dipakai sebagai nilai awal (seed) saat
+# dashboard pertama kali boot dan tabel core_settings masih kosong. Setelah
+# itu, buka tab "Pengaturan" di dashboard untuk mengubah URL/credential kapan
+# saja tanpa restart container — cocok kalau core-nya pindah host/domain.
+#
+# Pakai:
+#   docker compose -f docker-compose.dashboard-only.yml up -d --build
+
+services:
+  dashboard:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "10"
+    build:
+      context: .
+      dockerfile: ./dashboard/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    env_file:
+      - path: dashboard/.env
+        required: false
+    environment:
+      # Ganti ke URL core yang sebenarnya (boleh host/domain manapun, tidak
+      # harus di server yang sama). Cuma seed pertama boot — lihat catatan
+      # di atas.
+      WHATSAPP_API_URL: ${WHATSAPP_API_URL:-http://localhost:3000}
+    volumes:
+      - ./dashboard/data:/data

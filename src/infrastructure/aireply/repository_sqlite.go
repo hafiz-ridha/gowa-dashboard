@@ -367,6 +367,42 @@ func (r *Repository) InsertLog(ctx context.Context, log *domain.ReplyLog) error 
 	return err
 }
 
+// ---------- Global pause state ----------
+// Single-row table (id=1 enforced by CHECK constraint). Backs
+// usecase/aireply/pause.go's persisted pause deadline so it survives a
+// process restart.
+
+func (r *Repository) GetPauseUntil(ctx context.Context) (*time.Time, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT paused_until FROM ai_pause_state WHERE id = 1`)
+	var until sql.NullTime
+	err := row.Scan(&until)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !until.Valid {
+		return nil, nil
+	}
+	t := until.Time
+	return &t, nil
+}
+
+func (r *Repository) SetPauseUntil(ctx context.Context, until *time.Time) error {
+	var v any
+	if until != nil {
+		v = *until
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO ai_pause_state (id, paused_until, updated_at) VALUES (1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			paused_until = excluded.paused_until,
+			updated_at = excluded.updated_at`,
+		v, time.Now().UTC())
+	return err
+}
+
 func (r *Repository) ListLogs(ctx context.Context, filter domain.LogFilter) ([]domain.ReplyLog, error) {
 	q := `SELECT id, device_id, chat_jid, query, retrieved_chunk_ids, response,
 		latency_ms, tokens_in, tokens_out, status, error_message, created_at

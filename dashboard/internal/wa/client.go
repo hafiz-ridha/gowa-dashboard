@@ -9,24 +9,61 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
 // Client is a thin HTTP client for the core go-whatsapp-web-multidevice REST API.
+//
+// Fields are unexported + mutex-guarded because the core connection target
+// can be changed at runtime from the dashboard's "Pengaturan" tab (see
+// UpdateConfig) while requests from the scheduler/broadcaster/HTTP handlers
+// are concurrently in flight against the same shared instance (dashboard/main.go
+// constructs exactly one *Client and shares it everywhere).
 type Client struct {
-	BaseURL  string
-	User     string
-	Password string
+	mu       sync.RWMutex
+	baseURL  string
+	user     string
+	password string
 	HTTP     *http.Client
 }
 
 func NewClient(baseURL, user, password string) *Client {
 	return &Client{
-		BaseURL:  strings.TrimRight(baseURL, "/"),
-		User:     user,
-		Password: password,
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		user:     user,
+		password: password,
 		HTTP:     &http.Client{Timeout: 60 * time.Second},
 	}
+}
+
+// BaseURL returns the currently configured core base URL (thread-safe).
+func (c *Client) BaseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL
+}
+
+// UpdateConfig hot-swaps the core connection target. Safe to call while
+// requests are in flight: each request snapshots baseURL+user+password once
+// via snapshot() before it starts, so in-flight requests simply finish
+// against whatever values they already captured — only requests started
+// after this call see the new values.
+func (c *Client) UpdateConfig(baseURL, user, password string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.baseURL = strings.TrimRight(baseURL, "/")
+	c.user = user
+	c.password = password
+}
+
+// snapshot reads baseURL/user/password under a single lock so a request
+// never mixes a pre-update base URL with post-update credentials (or vice
+// versa) if UpdateConfig lands mid-request.
+func (c *Client) snapshot() (baseURL, user, password string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL, c.user, c.password
 }
 
 // Generic response envelope used by the core API.
@@ -37,9 +74,9 @@ type Response struct {
 	Results json.RawMessage `json:"results"`
 }
 
-func (c *Client) do(req *http.Request, deviceID string) (*Response, error) {
-	if c.User != "" || c.Password != "" {
-		req.SetBasicAuth(c.User, c.Password)
+func (c *Client) do(req *http.Request, deviceID, user, password string) (*Response, error) {
+	if user != "" || password != "" {
+		req.SetBasicAuth(user, password)
 	}
 	if deviceID != "" {
 		req.Header.Set("X-Device-Id", deviceID)
@@ -82,26 +119,28 @@ func (c *Client) do(req *http.Request, deviceID string) (*Response, error) {
 // (single-device mode auto-picks). Forward whatever the caller passes so
 // the dashboard can use its currently-selected device as the auth context.
 func (c *Client) ListDevices(deviceID string) (*Response, error) {
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/devices", nil)
+	baseURL, user, password := c.snapshot()
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/devices", nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 // Status proxies GET /devices/:id/status (multi-device) or /app/status (single).
 func (c *Client) DeviceStatus(deviceID string) (*Response, error) {
+	baseURL, user, password := c.snapshot()
 	var u string
 	if deviceID != "" {
-		u = fmt.Sprintf("%s/devices/%s/status", c.BaseURL, url.PathEscape(deviceID))
+		u = fmt.Sprintf("%s/devices/%s/status", baseURL, url.PathEscape(deviceID))
 	} else {
-		u = c.BaseURL + "/app/status"
+		u = baseURL + "/app/status"
 	}
 	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 // --- Device management ----------------------------------------------------
@@ -111,68 +150,74 @@ func (c *Client) DeviceStatus(deviceID string) (*Response, error) {
 // currently-selected device). Required when 2+ devices already exist;
 // safe to pass empty when bootstrapping the first device.
 func (c *Client) CreateDevice(newDeviceID, authDeviceID string) (*Response, error) {
+	baseURL, user, password := c.snapshot()
 	body, err := json.Marshal(map[string]string{"device_id": newDeviceID})
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/devices", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/devices", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return c.do(req, authDeviceID)
+	return c.do(req, authDeviceID, user, password)
 }
 
 // DeleteDevice proxies DELETE /devices/:id. Sends the same id as
 // X-Device-Id (the device being deleted exists; middleware passes).
 func (c *Client) DeleteDevice(deviceID string) (*Response, error) {
-	u := fmt.Sprintf("%s/devices/%s", c.BaseURL, url.PathEscape(deviceID))
+	baseURL, user, password := c.snapshot()
+	u := fmt.Sprintf("%s/devices/%s", baseURL, url.PathEscape(deviceID))
 	req, err := http.NewRequest(http.MethodDelete, u, nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 // Login proxies GET /app/login with X-Device-Id header. Returns the response
 // envelope which contains { qr_link, qr_duration, device_id }.
 func (c *Client) Login(deviceID string) (*Response, error) {
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/app/login", nil)
+	baseURL, user, password := c.snapshot()
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/app/login", nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 // LoginWithCode proxies GET /app/login-with-code?phone=<phone> with X-Device-Id header.
 // Returns the response envelope which contains { pair_code, device_id }.
 func (c *Client) LoginWithCode(deviceID, phone string) (*Response, error) {
-	u := fmt.Sprintf("%s/app/login-with-code?phone=%s", c.BaseURL, url.QueryEscape(phone))
+	baseURL, user, password := c.snapshot()
+	u := fmt.Sprintf("%s/app/login-with-code?phone=%s", baseURL, url.QueryEscape(phone))
 	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 // Logout proxies POST /devices/:id/logout.
 func (c *Client) Logout(deviceID string) (*Response, error) {
-	u := fmt.Sprintf("%s/devices/%s/logout", c.BaseURL, url.PathEscape(deviceID))
+	baseURL, user, password := c.snapshot()
+	u := fmt.Sprintf("%s/devices/%s/logout", baseURL, url.PathEscape(deviceID))
 	req, err := http.NewRequest(http.MethodPost, u, nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 // Reconnect proxies POST /devices/:id/reconnect.
 func (c *Client) Reconnect(deviceID string) (*Response, error) {
-	u := fmt.Sprintf("%s/devices/%s/reconnect", c.BaseURL, url.PathEscape(deviceID))
+	baseURL, user, password := c.snapshot()
+	u := fmt.Sprintf("%s/devices/%s/reconnect", baseURL, url.PathEscape(deviceID))
 	req, err := http.NewRequest(http.MethodPost, u, nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 // FetchStatic downloads an arbitrary static asset from the core (used to
@@ -181,17 +226,18 @@ func (c *Client) Reconnect(deviceID string) (*Response, error) {
 //
 // Returns body bytes, content-type, and an error.
 func (c *Client) FetchStatic(path string) ([]byte, string, error) {
+	baseURL, user, password := c.snapshot()
 	// path is expected to be like "/statics/qrcode/scan-qr-xxx.png" or just
 	// "scan-qr-xxx.png" (we normalize below).
 	if !strings.HasPrefix(path, "/") {
 		path = "/statics/qrcode/" + path
 	}
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL+path, nil)
+	req, err := http.NewRequest(http.MethodGet, baseURL+path, nil)
 	if err != nil {
 		return nil, "", err
 	}
-	if c.User != "" || c.Password != "" {
-		req.SetBasicAuth(c.User, c.Password)
+	if user != "" || password != "" {
+		req.SetBasicAuth(user, password)
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -224,16 +270,17 @@ type SendTextRequest struct {
 }
 
 func (c *Client) SendText(deviceID string, payload SendTextRequest) (*Response, error) {
+	baseURL, user, password := c.snapshot()
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/send/message", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/send/message", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 type SendLinkRequest struct {
@@ -243,16 +290,17 @@ type SendLinkRequest struct {
 }
 
 func (c *Client) SendLink(deviceID string, p SendLinkRequest) (*Response, error) {
+	baseURL, user, password := c.snapshot()
 	body, err := json.Marshal(p)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/send/link", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/send/link", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 type SendLocationRequest struct {
@@ -262,21 +310,23 @@ type SendLocationRequest struct {
 }
 
 func (c *Client) SendLocation(deviceID string, p SendLocationRequest) (*Response, error) {
+	baseURL, user, password := c.snapshot()
 	body, err := json.Marshal(p)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/send/location", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/send/location", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 // SendMedia uses multipart/form-data to send image/video/file/audio when only a URL is provided.
 // kind = "image" | "video" | "file" | "audio"
 func (c *Client) SendMediaURL(deviceID, kind, phone, mediaURL, caption string) (*Response, error) {
+	baseURL, user, password := c.snapshot()
 	endpoint, urlField := mediaEndpoint(kind)
 	if endpoint == "" {
 		return nil, fmt.Errorf("unsupported media kind %q", kind)
@@ -291,12 +341,12 @@ func (c *Client) SendMediaURL(deviceID, kind, phone, mediaURL, caption string) (
 	if err := mw.Close(); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL+endpoint, &buf)
+	req, err := http.NewRequest(http.MethodPost, baseURL+endpoint, &buf)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 func mediaEndpoint(kind string) (endpoint, urlField string) {
@@ -318,78 +368,87 @@ func mediaEndpoint(kind string) (endpoint, urlField string) {
 // proxies these 1:1 so the dashboard UI can be the single control plane.
 
 func (c *Client) GetAIConfig(deviceID string) (*Response, error) {
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/aireply/config", nil)
+	baseURL, user, password := c.snapshot()
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/aireply/config", nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 // SaveAIConfig accepts the raw JSON body so the dashboard handler can pass
 // the user form through without re-marshalling (keeps schema drift in core).
 func (c *Client) SaveAIConfig(deviceID string, body []byte) (*Response, error) {
-	req, err := http.NewRequest(http.MethodPut, c.BaseURL+"/aireply/config", bytes.NewReader(body))
+	baseURL, user, password := c.snapshot()
+	req, err := http.NewRequest(http.MethodPut, baseURL+"/aireply/config", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 func (c *Client) TestAIConfig(deviceID string) (*Response, error) {
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/aireply/config/test", nil)
+	baseURL, user, password := c.snapshot()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/aireply/config/test", nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 // UploadAIDocument streams the original multipart body straight to upstream
 // so we don't re-parse the file (which could be up to AI_MAX_KB_FILE_SIZE,
 // default 10MB). Caller passes the raw body reader + its Content-Type.
 func (c *Client) UploadAIDocument(deviceID string, body io.Reader, contentType string) (*Response, error) {
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/aireply/documents", body)
+	baseURL, user, password := c.snapshot()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/aireply/documents", body)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", contentType)
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 func (c *Client) ListAIDocuments(deviceID string) (*Response, error) {
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/aireply/documents", nil)
+	baseURL, user, password := c.snapshot()
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/aireply/documents", nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 func (c *Client) DeleteAIDocument(deviceID, id string) (*Response, error) {
-	u := fmt.Sprintf("%s/aireply/documents/%s", c.BaseURL, url.PathEscape(id))
+	baseURL, user, password := c.snapshot()
+	u := fmt.Sprintf("%s/aireply/documents/%s", baseURL, url.PathEscape(id))
 	req, err := http.NewRequest(http.MethodDelete, u, nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 func (c *Client) ReindexAIDocuments(deviceID string) (*Response, error) {
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/aireply/documents/reindex", nil)
+	baseURL, user, password := c.snapshot()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/aireply/documents/reindex", nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 func (c *Client) ListAIChatSettings(deviceID string) (*Response, error) {
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/aireply/chat-settings", nil)
+	baseURL, user, password := c.snapshot()
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/aireply/chat-settings", nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 func (c *Client) SetAIChatEnabled(deviceID, chatJID string, enabled bool) (*Response, error) {
+	baseURL, user, password := c.snapshot()
 	body, err := json.Marshal(map[string]bool{"enabled": enabled})
 	if err != nil {
 		return nil, err
@@ -398,46 +457,50 @@ func (c *Client) SetAIChatEnabled(deviceID, chatJID string, enabled bool) (*Resp
 	// percent-encoded "@" (%40) reaches the JID validator and is rejected
 	// with "missing server". WhatsApp JIDs only contain digits, "@", and
 	// "." (and ":" for AD-suffixed), all safe to embed raw in a path.
-	u := fmt.Sprintf("%s/aireply/chat-settings/%s", c.BaseURL, strings.ReplaceAll(url.PathEscape(chatJID), "%40", "@"))
+	u := fmt.Sprintf("%s/aireply/chat-settings/%s", baseURL, strings.ReplaceAll(url.PathEscape(chatJID), "%40", "@"))
 	req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 // PauseAIReply — global pause. minutes <= 0 = indefinite (until restart).
 func (c *Client) PauseAIReply(deviceID string, minutes int) (*Response, error) {
+	baseURL, user, password := c.snapshot()
 	body, err := json.Marshal(map[string]int{"minutes": minutes})
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/aireply/pause", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/aireply/pause", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 func (c *Client) ResumeAIReply(deviceID string) (*Response, error) {
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/aireply/resume", nil)
+	baseURL, user, password := c.snapshot()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/aireply/resume", nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 func (c *Client) GetAIPauseStatus(deviceID string) (*Response, error) {
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/aireply/pause-status", nil)
+	baseURL, user, password := c.snapshot()
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/aireply/pause-status", nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }
 
 func (c *Client) ListAILogs(deviceID, chatJID, status string, limit int) (*Response, error) {
+	baseURL, user, password := c.snapshot()
 	q := url.Values{}
 	if chatJID != "" {
 		q.Set("chat_jid", chatJID)
@@ -448,7 +511,7 @@ func (c *Client) ListAILogs(deviceID, chatJID, status string, limit int) (*Respo
 	if limit > 0 {
 		q.Set("limit", fmt.Sprintf("%d", limit))
 	}
-	u := c.BaseURL + "/aireply/logs"
+	u := baseURL + "/aireply/logs"
 	if enc := q.Encode(); enc != "" {
 		u += "?" + enc
 	}
@@ -456,5 +519,5 @@ func (c *Client) ListAILogs(deviceID, chatJID, status string, limit int) (*Respo
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req, deviceID)
+	return c.do(req, deviceID, user, password)
 }

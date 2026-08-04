@@ -32,7 +32,19 @@
         .schedule-row td { vertical-align: middle; }
         .log-success { color: #2e7d32; }
         .log-error { color: #c62828; }
-        .nav-tabs { margin-bottom: 16px; }
+        /* 7 tab butuh ~900px. Scroll horizontal berlaku di SEMUA lebar, bukan
+           cuma mobile — di layar 768-912px menu juga tidak muat. overflow-x:auto
+           hanya memunculkan scrollbar kalau memang meluber, jadi di desktop lebar
+           tampilannya tetap sama persis seperti sebelumnya. */
+        .nav-tabs {
+            margin-bottom: 16px;
+            overflow-x: auto;
+            overflow-y: hidden;
+            flex-wrap: nowrap;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: thin;
+        }
+        .nav-tabs .item { flex: 0 0 auto; white-space: nowrap; }
         .api-status-pill { transition: background 0.2s; user-select: none; }
         .api-status-pill:hover { filter: brightness(1.05); }
         .api-status-pill.green { background: #21ba45 !important; color: white !important; }
@@ -52,6 +64,131 @@
         .schedules-toolbar .search-box { flex: 1; min-width: 220px; max-width: 360px; }
         .import-row-ok { background: #f1f8f1; }
         .import-row-fail { background: #fdecea; }
+
+        /* ---- Panel header (judul kiri + grup tombol kanan) ----
+           Sebelumnya pakai `right floated` Semantic: float keluar dari alur
+           normal, jadi saat sempit tombol-tombolnya melewati batas bawah
+           header dan menimpa konten di bawahnya, dengan posisi horizontal
+           yang acak. Flexbox + wrap menghilangkan itu sepenuhnya: tombol
+           selalu di dalam header, dan turun rapi jadi baris baru saat sempit. */
+        .panel-head.ui.header {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px 8px;
+        }
+        .panel-head .panel-head-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex: 1 1 auto;
+            min-width: 0;          /* izinkan judul menyusut, bukan mendorong tombol keluar */
+            word-break: break-word;
+        }
+        .panel-head .panel-head-title > i.icon { flex: 0 0 auto; margin: 0; }
+        .panel-head .panel-head-actions {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-left: auto;     /* dorong grup tombol ke kanan */
+        }
+        /* Semantic memberi margin-right pada tiap button; gap sudah menangani
+           jarak, jadi margin bawaan dinolkan supaya spacing benar-benar rata. */
+        .panel-head .panel-head-actions > .ui.button { margin: 0; }
+
+        /* ---- Kolom aksi di dalam tabel ----
+           5 tombol ikon mini dalam satu sel: jaga tetap satu baris rapi dengan
+           jarak konsisten. Kalau sempit, .table-responsive yang scroll — bukan
+           tombolnya yang saling berdesakan/menumpuk. */
+        td.row-actions { white-space: nowrap; }
+        td.row-actions .ui.button { margin: 0 4px 0 0; }
+        td.row-actions .ui.button:last-child { margin-right: 0; }
+
+        /* Tabel lebar (Riwayat, Broadcast, AI logs, dll) di-scroll horizontal
+           dalam container-nya sendiri, supaya body halaman tidak pernah
+           overflow ke samping di layar kecil. */
+        .table-responsive { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        .table-responsive > table { margin-top: 0; }
+        /* Semua tabel data diberi class `unstackable` supaya Fomantic TIDAK
+           memecahnya jadi blok bertumpuk di mobile — stacking bawaan memisahkan
+           label kolom dari nilainya sehingga tidak terbaca. Sebagai gantinya
+           tabel dipertahankan utuh dan digeser horizontal lewat wrapper ini. */
+        @media (max-width: 767px) {
+            /* Beri lebar minimum supaya kolom tidak gepeng saat digeser.
+               Dikecualikan untuk tabel `basic` (2 kolom, mis. Status Koneksi
+               di tab Pengaturan) yang memang muat tanpa scroll. */
+            .table-responsive > table.ui.table:not(.basic) { min-width: 640px; }
+            /* Bayangan tipis di tepi kanan sebagai petunjuk masih ada kolom
+               lain di samping — affordance scroll tanpa menambah elemen. */
+            .table-responsive {
+                background:
+                    linear-gradient(to right, rgba(0,0,0,0.06), rgba(0,0,0,0)) right center / 12px 100% no-repeat;
+            }
+        }
+
+        /* ============ RESPONSIVE ============ */
+        @media (max-width: 991px) {
+            .main-wrap { padding: 16px; }
+        }
+
+        @media (max-width: 767px) {
+            .main-wrap { padding: 12px; }
+            body { padding: 0; }
+
+            /* Header: judul + status pill boleh turun baris, jangan overflow */
+            .brand { flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+            .brand h1 { font-size: 20px; }
+            .brand .tag { font-size: 11px; }
+            .brand > i.huge.icon { font-size: 2.5em !important; }
+            .brand > div[style*="margin-left"] { margin-left: 0 !important; width: 100%; }
+
+            /* Nav tab lebih rapat di mobile supaya lebih banyak yang terlihat
+               sebelum perlu di-scroll (scroll-nya sendiri diatur di base rule). */
+            .nav-tabs.ui.menu .item {
+                padding-left: 10px !important;
+                padding-right: 10px !important;
+                font-size: 13px;
+            }
+
+            /* Semantic "N fields" pakai flex row — paksa jadi kolom di mobile.
+               (Ini bukan .ui.grid, jadi class "stackable" tidak berlaku.) */
+            .ui.form .fields { flex-direction: column; margin-bottom: 0; }
+            .ui.form .fields > .field {
+                width: 100% !important;
+                margin-bottom: 1em;
+                padding-left: 0 !important;
+                padding-right: 0 !important;
+            }
+            /* Inline fields (mis. checkbox sebaris) tetap boleh wrap normal */
+            .ui.form .inline.fields { flex-direction: row; flex-wrap: wrap; }
+            .ui.form .inline.fields > .field { width: auto !important; }
+
+            /* Modal: hampir full-width, tetap bisa di-scroll */
+            .ui.modal {
+                width: 95% !important;
+                margin: 0 !important;
+                max-height: 90vh;
+            }
+            .ui.modal > .scrolling.content { max-height: 65vh !important; }
+            .ui.modal > .actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+
+            /* Toolbar & tombol grup */
+            .schedules-toolbar { gap: 8px; }
+            .schedules-toolbar .search-box { max-width: none; min-width: 0; width: 100%; }
+
+            table.ui.table { font-size: 12px; }
+        }
+
+        @media (max-width: 480px) {
+            .main-wrap { padding: 10px; }
+            .brand h1 { font-size: 18px; }
+            .nav-tabs.ui.menu .item { font-size: 12px; padding-left: 8px !important; padding-right: 8px !important; }
+            .ui.modal { width: 98% !important; }
+            table.ui.table { font-size: 11px; }
+            /* Tombol full-width supaya gampang di-tap */
+            .ui.form .ui.button:not(.mini):not(.compact) { width: 100%; margin-bottom: 6px; }
+        }
     </style>
 </head>
 <body>
@@ -94,15 +231,21 @@
         <a class="item" :class="{active: tab === 'aireply'}" @click="openAITab">
             <i class="robot icon"></i> AI Reply
         </a>
+        <a class="item" :class="{active: tab === 'settings'}" @click="openSettingsTab">
+            <i class="cog icon"></i> Pengaturan
+        </a>
     </div>
 
     <!-- ================== DEVICES TAB ================== -->
     <div v-if="tab === 'devices'">
-        <div class="ui top attached header">
-            <i class="mobile alternate icon"></i>
-            Daftar Device
-            <button class="ui right floated mini primary button" @click="openAddDevice"><i class="plus icon"></i> Tambah Device</button>
-            <button class="ui right floated mini button" @click="loadDevices"><i class="refresh icon"></i> Reload</button>
+        <div class="ui top attached header panel-head">
+            <span class="panel-head-title">
+                <i class="mobile alternate icon"></i> Daftar Device
+            </span>
+            <span class="panel-head-actions">
+                <button class="ui mini primary button" @click="openAddDevice"><i class="plus icon"></i> Tambah Device</button>
+                <button class="ui mini button" @click="loadDevices"><i class="refresh icon"></i> Reload</button>
+            </span>
         </div>
         <div class="ui attached segment">
             <div v-if="devicesLoading" class="ui active centered inline loader"></div>
@@ -341,23 +484,27 @@
 
     <!-- ================== SCHEDULES TAB ================== -->
     <div v-if="tab === 'schedules'">
-        <div class="ui top attached header">
-            <i class="calendar alternate icon"></i> Jadwal & Reminder
-            <button class="ui right floated mini primary button" @click="openScheduleEditor()"><i class="plus icon"></i> Buat Jadwal Baru</button>
+        <div class="ui top attached header panel-head">
+            <span class="panel-head-title">
+                <i class="calendar alternate icon"></i> Jadwal &amp; Reminder
+            </span>
             <!-- Import / Export Excel. File input disembunyikan; tombol Import
                  trigger klik ke input. Hasil import muncul di modal. -->
             <input type="file" ref="schImportInput" accept=".xlsx"
                    style="display:none" @change="onScheduleImportFile">
-            <button class="ui right floated mini basic button" @click="triggerScheduleImport"
-                    :class="{loading: schImporting}" title="Import jadwal dari file .xlsx">
-                <i class="upload icon"></i> Import Excel
-            </button>
-            <button class="ui right floated mini basic button" @click="doScheduleExport"
-                    :class="{loading: schExporting}" :disabled="!schedules.length"
-                    :title="schedules.length ? 'Download semua jadwal sebagai .xlsx' : 'Belum ada jadwal untuk di-export'">
-                <i class="download icon"></i> Export Excel
-            </button>
-            <button class="ui right floated mini button" @click="loadSchedules"><i class="refresh icon"></i> Reload</button>
+            <span class="panel-head-actions">
+                <button class="ui mini primary button" @click="openScheduleEditor()"><i class="plus icon"></i> Buat Jadwal Baru</button>
+                <button class="ui mini basic button" @click="triggerScheduleImport"
+                        :class="{loading: schImporting}" title="Import jadwal dari file .xlsx">
+                    <i class="upload icon"></i> Import Excel
+                </button>
+                <button class="ui mini basic button" @click="doScheduleExport"
+                        :class="{loading: schExporting}" :disabled="!schedules.length"
+                        :title="schedules.length ? 'Download semua jadwal sebagai .xlsx' : 'Belum ada jadwal untuk di-export'">
+                    <i class="download icon"></i> Export Excel
+                </button>
+                <button class="ui mini button" @click="loadSchedules"><i class="refresh icon"></i> Reload</button>
+            </span>
         </div>
         <div class="ui attached segment">
             <!-- Search + sort toolbar. Filter & sort di client side; tidak ada
@@ -383,7 +530,8 @@
                     </a>
                 </div>
             </div>
-            <table class="ui celled compact table">
+            <div class="table-responsive">
+            <table class="ui celled compact unstackable table">
                 <thead>
                 <tr>
                     <th class="sortable" :class="{sorted: schSortField === 'name'}" @click="setScheduleSort('name')">
@@ -410,7 +558,7 @@
                     <th class="sortable" :class="{sorted: schSortField === 'enabled'}" @click="setScheduleSort('enabled')">
                         Status <span class="sort-ind">{{ scheduleSortInd('enabled') }}</span>
                     </th>
-                    <th style="width:160px">Aksi</th>
+                    <th style="width:190px;white-space:nowrap">Aksi</th>
                 </tr>
                 </thead>
                 <tbody>
@@ -435,7 +583,7 @@
                             {{ s.last_status }} · runs: {{ s.run_count }}
                         </div>
                     </td>
-                    <td>
+                    <td class="row-actions">
                         <button class="ui mini icon button" title="Edit" @click="openScheduleEditor(s)"><i class="edit icon"></i></button>
                         <button class="ui mini icon button" :class="s.enabled ? 'orange' : 'green'"
                                 :title="s.enabled ? 'Jeda' : 'Aktifkan'" @click="toggleSchedule(s)">
@@ -448,17 +596,22 @@
                 </tr>
                 </tbody>
             </table>
+            </div>
         </div>
     </div>
 
     <!-- ================== LOGS TAB ================== -->
     <div v-if="tab === 'logs'">
-        <div class="ui top attached header">
-            <i class="history icon"></i> Riwayat Eksekusi
-            <button class="ui right floated mini button" @click="loadRecentLogs"><i class="refresh icon"></i> Reload</button>
-            <button class="ui right floated mini basic button" @click="loadDbStats(); $nextTick(() => { /* trigger reactive */ })">
-                <i class="database icon"></i> Database Info
-            </button>
+        <div class="ui top attached header panel-head">
+            <span class="panel-head-title">
+                <i class="history icon"></i> Riwayat Eksekusi
+            </span>
+            <span class="panel-head-actions">
+                <button class="ui mini basic button" @click="loadDbStats(); $nextTick(() => { /* trigger reactive */ })">
+                    <i class="database icon"></i> Database Info
+                </button>
+                <button class="ui mini button" @click="loadRecentLogs"><i class="refresh icon"></i> Reload</button>
+            </span>
         </div>
         <div class="ui attached segment">
             <!-- ===== Maintenance panel (auto-delete) ===== -->
@@ -508,7 +661,8 @@
                 </div>
             </div>
 
-            <table class="ui celled compact table" style="margin-top:14px">
+            <div class="table-responsive" style="margin-top:14px">
+            <table class="ui celled compact unstackable table">
                 <thead><tr>
                     <th>Waktu</th><th>Schedule ID</th><th>Status</th><th>Detail</th>
                 </tr></thead>
@@ -522,6 +676,7 @@
                 </tr>
                 </tbody>
             </table>
+            </div>
         </div>
     </div>
 
@@ -645,11 +800,15 @@
 
     <!-- ================== BROADCAST TAB ================== -->
     <div v-if="tab === 'broadcast'">
-        <div class="ui top attached header">
-            <i class="bullhorn icon"></i> Broadcast Pesan
-            <button class="ui right floated mini button" @click="loadBroadcasts" title="Refresh">
-                <i class="refresh icon"></i> Reload
-            </button>
+        <div class="ui top attached header panel-head">
+            <span class="panel-head-title">
+                <i class="bullhorn icon"></i> Broadcast Pesan
+            </span>
+            <span class="panel-head-actions">
+                <button class="ui mini button" @click="loadBroadcasts" title="Refresh">
+                    <i class="refresh icon"></i> Reload
+                </button>
+            </span>
         </div>
         <div class="ui attached segment">
             <div class="ui icon warning message" style="margin-bottom:14px">
@@ -827,7 +986,8 @@
             <!-- History -->
             <h4 class="ui horizontal divider header"><i class="history icon"></i> Riwayat Broadcast</h4>
             <div v-if="!broadcasts.length" class="ui info message">Belum ada broadcast.</div>
-            <table v-else class="ui celled striped compact table">
+            <div v-else class="table-responsive">
+            <table class="ui celled striped compact unstackable table">
                 <thead>
                     <tr>
                         <th>Waktu</th>
@@ -852,7 +1012,7 @@
                             <small>{{ b.sent_count }}✓ / {{ b.failed_count }}✗ / {{ b.total }}</small>
                         </td>
                         <td><span class="ui mini label" :class="bcStatusColor(b.status)">{{ b.status }}</span></td>
-                        <td>
+                        <td class="row-actions">
                             <button class="ui mini button" @click="bcViewRecipients(b)" title="Detail penerima">
                                 <i class="list icon"></i>
                             </button>
@@ -866,6 +1026,7 @@
                     </tr>
                 </tbody>
             </table>
+            </div>
         </div>
 
         <!-- Modal: per-recipient detail -->
@@ -882,7 +1043,8 @@
                         <div class="field"><div class="ui radio checkbox"><input type="radio" v-model="bcDetailFilter" value="failed" @change="bcLoadRecipients"><label>Gagal</label></div></div>
                     </div>
                 </div>
-                <table class="ui celled compact table">
+                <div class="table-responsive">
+                <table class="ui celled compact unstackable table">
                     <thead><tr><th>Recipient</th><th>Status</th><th>Sent at</th><th>Error</th></tr></thead>
                     <tbody>
                         <tr v-if="!bcRecipients.length"><td colspan="4" style="text-align:center;color:#999">Kosong.</td></tr>
@@ -894,6 +1056,7 @@
                         </tr>
                     </tbody>
                 </table>
+                </div>
             </div>
             <div class="actions"><button class="ui cancel button">Tutup</button></div>
         </div>
@@ -911,7 +1074,12 @@
                 <p>
                     Tidak ada balasan otomatis (AI maupun static "Auto reply message") sampai
                     <b v-if="aiPauseRemainingHuman">{{ aiPauseRemainingHuman }}</b>
-                    <span v-else>resume manual atau container restart</span>.
+                    <span v-else>di-resume manual</span>.
+                </p>
+                <p style="font-size:12px;color:#8a1f1f">
+                    <i class="lock icon"></i>
+                    Status pause ini tersimpan permanen — tetap aktif walau container/server
+                    di-restart atau di-update, sampai tombol Resume ditekan.
                 </p>
                 <button class="ui small green button" @click="aiResume" :class="{loading: aiPauseSaving}">
                     <i class="play icon"></i> Resume Sekarang
@@ -923,7 +1091,7 @@
                 <i class="pause circle outline icon" style="font-size:24px;color:#f57c00"></i>
                 <div style="flex:1;min-width:200px">
                     <b>Pause Semua Auto Reply</b>
-                    <div style="color:#666;font-size:12px">Hentikan sementara AI Reply &amp; static auto-reply untuk seluruh device. Berguna saat meeting / liburan.</div>
+                    <div style="color:#666;font-size:12px">Hentikan sementara AI Reply &amp; static auto-reply untuk seluruh device. Berguna saat meeting / liburan. Status pause tersimpan permanen — tetap berlaku setelah restart/update sampai di-Resume.</div>
                 </div>
                 <select v-model.number="aiPauseDuration" class="ui dropdown mini compact">
                     <option :value="15">15 menit</option>
@@ -1022,7 +1190,8 @@
                                 </span>
                                 <span style="margin-left:6px;color:#666">{{ aiHealth.ready_count }} / {{ aiHealth.total_devices }} device siap auto-reply</span>
                             </div>
-                            <table class="ui compact celled small table" style="margin-bottom:0">
+                            <div class="table-responsive">
+                            <table class="ui compact celled small unstackable table" style="margin-bottom:0">
                                 <thead>
                                     <tr>
                                         <th>Device</th>
@@ -1055,6 +1224,7 @@
                                     </tr>
                                 </tbody>
                             </table>
+                            </div>
                         </div>
                     </div>
 
@@ -1236,7 +1406,8 @@
                     </div>
                     <div class="ui divider"></div>
                     <div v-if="aiDocsLoading" class="ui active centered inline loader"></div>
-                    <table v-else class="ui celled table">
+                    <div v-else class="table-responsive">
+                    <table class="ui celled unstackable table">
                         <thead><tr><th>Filename</th><th>Size</th><th>Chunks</th><th>Status</th><th>Dibuat</th><th></th></tr></thead>
                         <tbody>
                             <tr v-if="!aiDocs.length"><td colspan="6" style="text-align:center;color:#999">Belum ada dokumen.</td></tr>
@@ -1253,6 +1424,7 @@
                             </tr>
                         </tbody>
                     </table>
+                    </div>
                 </div>
 
                 <!-- ===== CHAT TOGGLE SUB-TAB ===== -->
@@ -1300,7 +1472,8 @@
                     </div>
                     <div class="ui divider"></div>
                     <div v-if="aiChatLoading" class="ui active centered inline loader"></div>
-                    <table v-else class="ui celled table">
+                    <div v-else class="table-responsive">
+                    <table class="ui celled unstackable table">
                         <thead><tr><th>Chat JID</th><th>Status</th><th>Diupdate</th><th></th></tr></thead>
                         <tbody>
                             <tr v-if="!aiChatSettings.length"><td colspan="4" style="text-align:center;color:#999">Belum ada setting per-chat.</td></tr>
@@ -1320,6 +1493,7 @@
                             </tr>
                         </tbody>
                     </table>
+                    </div>
                 </div>
 
                 <!-- ===== LOGS SUB-TAB ===== -->
@@ -1351,7 +1525,8 @@
                     </div>
                     <div class="ui divider"></div>
                     <div v-if="aiLogsLoading" class="ui active centered inline loader"></div>
-                    <table v-else class="ui celled striped compact table">
+                    <div v-else class="table-responsive">
+                    <table class="ui celled striped compact unstackable table">
                         <thead>
                             <tr><th>Waktu</th><th>Chat</th><th>Status</th><th>Query</th><th>Response</th><th>Latency</th><th>In/Out</th><th></th></tr>
                         </thead>
@@ -1379,8 +1554,136 @@
                             </template>
                         </tbody>
                     </table>
+                    </div>
                 </div>
             </template>
+        </div>
+    </div>
+
+    <!-- ================== SETTINGS TAB ================== -->
+    <!-- Koneksi dashboard → gowa-core. Nilai awal di-seed dari env
+         (WHATSAPP_API_URL/_USER/_PASSWORD) saat pertama boot; setelah disimpan
+         di sini, dashboard.db yang menang dan langsung dipakai tanpa restart. -->
+    <div v-if="tab === 'settings'">
+        <div class="ui segment">
+            <h3 class="ui header">
+                <i class="plug icon"></i>
+                <div class="content">
+                    Koneksi ke GoWA Core
+                    <div class="sub header">URL & credential API core yang dipakai dashboard ini.</div>
+                </div>
+            </h3>
+
+            <div class="ui info message">
+                <i class="info circle icon"></i>
+                Dashboard ini bisa di-install &amp; di-update terpisah dari core.
+                Arahkan ke core mana pun (server/domain berbeda juga boleh) —
+                perubahan langsung dipakai tanpa perlu restart container.
+            </div>
+
+            <form class="ui form" @submit.prevent="saveCoreSettings">
+                <div class="field required">
+                    <label>Core Base URL</label>
+                    <input type="text" v-model.trim="coreSettings.base_url"
+                           placeholder="http://localhost:3000 atau https://core.domain.com">
+                    <div class="ui pointing label" style="background:transparent;color:#888;padding-left:0">
+                        Tanpa trailing slash. Di dalam Docker network pakai nama service, mis.
+                        <code>http://whatsapp_go:3000</code>.
+                    </div>
+                </div>
+
+                <div class="two fields">
+                    <div class="field">
+                        <label>Username (basic auth)</label>
+                        <input type="text" v-model.trim="coreSettings.user" autocomplete="off"
+                               placeholder="kosongkan kalau core tidak pakai APP_BASIC_AUTH">
+                    </div>
+                    <div class="field">
+                        <label>
+                            Password (basic auth)
+                            <span v-if="coreSettings.password_set" class="ui mini green label" style="margin-left:6px">
+                                <i class="check icon"></i> sudah diset
+                            </span>
+                        </label>
+                        <input type="password" v-model="coreSettingsPassword" autocomplete="new-password"
+                               :placeholder="coreSettings.password_set ? 'kosongkan = tidak diubah' : 'kosongkan kalau tidak pakai basic auth'">
+                    </div>
+                </div>
+
+                <div v-if="coreSettingsError" class="ui negative message">
+                    <i class="times circle icon"></i> {{ coreSettingsError }}
+                </div>
+                <div v-if="coreSettingsSuccess" class="ui positive message">
+                    <i class="check circle icon"></i> {{ coreSettingsSuccess }}
+                </div>
+
+                <button class="ui primary button" type="submit" :class="{loading: coreSettingsSaving, disabled: coreSettingsSaving}">
+                    <i class="save icon"></i> Simpan &amp; Terapkan
+                </button>
+                <button class="ui button" type="button" @click="testCoreConnection"
+                        :class="{loading: coreSettingsTesting, disabled: coreSettingsTesting}">
+                    <i class="plug icon"></i> Test Koneksi
+                </button>
+                <button class="ui basic button" type="button" @click="loadCoreSettings">
+                    <i class="undo icon"></i> Reset
+                </button>
+            </form>
+        </div>
+
+        <div class="ui segment">
+            <h4 class="ui header"><i class="server icon"></i> Status Koneksi Saat Ini</h4>
+            <div class="table-responsive">
+                <table class="ui very basic compact unstackable table">
+                    <tbody>
+                        <tr>
+                            <td style="width:180px"><b>Core URL aktif</b></td>
+                            <td><code>{{ upstreamUrl || '-' }}</code></td>
+                        </tr>
+                        <tr>
+                            <td><b>Status</b></td>
+                            <td>
+                                <span class="ui label api-status-pill" :class="apiStatusClass">
+                                    <i :class="apiStatusIcon"></i> {{ apiStatusLabel }}
+                                </span>
+                                <span v-if="upstream.latency_ms != null" style="margin-left:8px;color:#888">
+                                    {{ upstream.latency_ms }}ms
+                                </span>
+                            </td>
+                        </tr>
+                        <tr v-if="upstream.error">
+                            <td><b>Error</b></td>
+                            <td style="color:#c62828">{{ upstream.error }}</td>
+                        </tr>
+                        <tr>
+                            <td><b>Terakhir dicek</b></td>
+                            <td>{{ upstream.checked_at ? formatTime(upstream.checked_at) : '-' }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <button class="ui small button" @click="checkUpstreamHealth(true)">
+                <i class="sync icon"></i> Cek Ulang
+            </button>
+        </div>
+
+        <div class="ui segment">
+            <h4 class="ui header"><i class="shield alternate icon"></i> Catatan Keamanan</h4>
+            <div class="ui bulleted list">
+                <div class="item">
+                    Password basic-auth core disimpan di database lokal dashboard
+                    (<code>dashboard.db</code>) dalam bentuk teks biasa — sama seperti data
+                    jadwal &amp; broadcast di file yang sama. Lindungi file/volume-nya
+                    seperti kamu melindungi file <code>.env</code>.
+                </div>
+                <div class="item">
+                    Password tidak pernah dikirim balik ke browser — form ini hanya
+                    menampilkan status "sudah diset".
+                </div>
+                <div class="item">
+                    Aktifkan <code>DASHBOARD_BASIC_AUTH</code> kalau dashboard bisa diakses
+                    dari internet.
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1415,7 +1718,8 @@
                     Baris yang gagal dilewati — data yang valid tetap di-import. Perbaiki baris-baris di bawah ini di file Excel lalu coba import ulang (akan jadi row baru lagi, hapus yang duplikat kalau perlu).
                 </div>
             </div>
-            <table class="ui celled compact table" v-if="schImportResult && schImportResult.results && schImportResult.results.length">
+            <div class="table-responsive" v-if="schImportResult && schImportResult.results && schImportResult.results.length">
+            <table class="ui celled compact unstackable table">
                 <thead><tr>
                     <th style="width:60px">Row</th>
                     <th>Nama</th>
@@ -1439,6 +1743,7 @@
                     </tr>
                 </tbody>
             </table>
+            </div>
             <div v-else-if="schImportResult" style="text-align:center;color:#999;padding:14px">
                 Tidak ada baris yang di-proses.
             </div>
@@ -1453,7 +1758,8 @@
         <i class="close icon"></i>
         <div class="header">Log eksekusi: {{ logsFor && logsFor.name }}</div>
         <div class="scrolling content">
-            <table class="ui celled compact table">
+            <div class="table-responsive">
+            <table class="ui celled compact unstackable table">
                 <thead><tr><th>Waktu</th><th>Status</th><th>Detail</th></tr></thead>
                 <tbody>
                 <tr v-if="!logEntries.length"><td colspan="3" style="text-align:center;color:#999">Belum ada log.</td></tr>
@@ -1464,6 +1770,7 @@
                 </tr>
                 </tbody>
             </table>
+            </div>
         </div>
         <div class="actions"><button class="ui cancel button">Tutup</button></div>
     </div>
@@ -1487,6 +1794,16 @@ createApp({
                 note: '',
             },
             upstreamPollTimer: null,
+            // --- Pengaturan tab: koneksi ke core ---
+            // password TIDAK pernah dikirim balik dari server — coreSettings
+            // cuma bawa flag password_set; input-nya terpisah (coreSettingsPassword)
+            // dan hanya dikirim kalau user benar-benar mengetik sesuatu.
+            coreSettings: { base_url: '', user: '', password_set: false },
+            coreSettingsPassword: '',
+            coreSettingsSaving: false,
+            coreSettingsTesting: false,
+            coreSettingsError: '',
+            coreSettingsSuccess: '',
             // --- DB stats / cleanup ---
             dbStats: null,
             cleanupRunning: false,
@@ -2568,7 +2885,7 @@ createApp({
         async aiPause() {
             const m = this.aiPauseDuration;
             const label = m === 0 ? 'tanpa batas waktu' : this.aiPauseDurationLabel;
-            if (!confirm(`Pause AI Auto-Reply (${label})?\n\nSelama paused, SEMUA device tidak akan balas otomatis — AI maupun static "Auto reply message". Pesan masuk tetap diterima & disimpan, hanya balasannya yang di-suppress.`)) {
+            if (!confirm(`Pause AI Auto-Reply (${label})?\n\nSelama paused, SEMUA device tidak akan balas otomatis — AI maupun static "Auto reply message". Pesan masuk tetap diterima & disimpan, hanya balasannya yang di-suppress.\n\nStatus pause tersimpan permanen: tetap aktif walau server/container di-restart atau di-update, sampai kamu tekan Resume.`)) {
                 return;
             }
             this.aiPauseSaving = true;
@@ -2691,6 +3008,72 @@ createApp({
                 this.upstream.error = e.response?.data?.error || e.message;
                 this.upstream.note = '';
                 this.upstreamOk = false;
+            }
+        },
+        // ===== Pengaturan: koneksi ke core =====
+        openSettingsTab() {
+            this.tab = 'settings';
+            this.loadCoreSettings();
+            this.checkUpstreamHealth(true);
+        },
+        async loadCoreSettings() {
+            this.coreSettingsError = '';
+            this.coreSettingsSuccess = '';
+            this.coreSettingsPassword = '';
+            try {
+                const r = await axios.get('/api/settings/core');
+                this.coreSettings = {
+                    base_url: r.data.base_url || '',
+                    user: r.data.user || '',
+                    password_set: !!r.data.password_set,
+                };
+            } catch (e) {
+                this.coreSettingsError = 'Gagal memuat pengaturan: ' + (e.response?.data?.error || e.message);
+            }
+        },
+        async saveCoreSettings() {
+            this.coreSettingsError = '';
+            this.coreSettingsSuccess = '';
+            if (!this.coreSettings.base_url) {
+                this.coreSettingsError = 'Core Base URL wajib diisi.';
+                return;
+            }
+            this.coreSettingsSaving = true;
+            try {
+                const payload = {
+                    base_url: this.coreSettings.base_url,
+                    user: this.coreSettings.user || '',
+                    // kosong = server pertahankan password tersimpan
+                    password: this.coreSettingsPassword || '',
+                };
+                const r = await axios.put('/api/settings/core', payload);
+                this.coreSettings.password_set = !!r.data.password_set;
+                this.coreSettingsPassword = '';
+                this.coreSettingsSuccess = 'Tersimpan. Koneksi langsung dialihkan ke ' + r.data.base_url + ' (tanpa restart).';
+                // Badge di header harus langsung mencerminkan target baru.
+                await this.checkUpstreamHealth(true);
+                this.loadDevices();
+            } catch (e) {
+                this.coreSettingsError = e.response?.data?.error || e.message;
+            } finally {
+                this.coreSettingsSaving = false;
+            }
+        },
+        async testCoreConnection() {
+            this.coreSettingsTesting = true;
+            this.coreSettingsError = '';
+            this.coreSettingsSuccess = '';
+            try {
+                await this.checkUpstreamHealth(true);
+                if (this.upstream.status === 'connected') {
+                    this.coreSettingsSuccess = 'Core merespons (' + (this.upstream.latency_ms ?? '?') + 'ms).'
+                        + (this.upstream.note ? ' ' + this.upstream.note : '');
+                } else {
+                    this.coreSettingsError = 'Core tidak merespons: ' + (this.upstream.error || 'unknown error')
+                        + '. Catatan: tombol ini menguji koneksi yang SEDANG aktif — kalau URL di form baru diubah, simpan dulu.';
+                }
+            } finally {
+                this.coreSettingsTesting = false;
             }
         },
         async loadDbStats() {

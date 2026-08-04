@@ -33,6 +33,13 @@ func (h *Handlers) Register(app *fiber.App) {
 	g.Get("/_health/upstream", h.healthUpstream) // live ping ke core utk badge "API Core Connected"
 	g.Get("/_stats", h.stats)                    // DB row counts + retention config
 	g.Post("/_cleanup", h.cleanupNow)            // manual trigger cleanup (idempotent)
+
+	// Core connection settings — base URL + basic-auth credential yang
+	// dashboard pakai untuk konek ke gowa-core. Runtime-editable dari tab
+	// "Pengaturan": simpan ke dashboard.db (menang atas env setelah pernah
+	// disave) dan hot-swap h.WA langsung, tanpa restart proses.
+	g.Get("/settings/core", h.getCoreSettings)
+	g.Put("/settings/core", h.updateCoreSettings)
 	g.Get("/devices", h.listDevices)
 	g.Post("/devices", h.createDevice)
 	g.Delete("/devices/:id", h.deleteDevice)
@@ -132,7 +139,7 @@ func (h *Handlers) healthUpstream(c *fiber.Ctx) error {
 	if err == nil {
 		return c.JSON(fiber.Map{
 			"ok":           true,
-			"upstream_url": h.WA.BaseURL,
+			"upstream_url": h.WA.BaseURL(),
 			"latency_ms":   latency,
 			"checked_at":   time.Now().UTC().Format(time.RFC3339),
 		})
@@ -143,7 +150,7 @@ func (h *Handlers) healthUpstream(c *fiber.Ctx) error {
 	if strings.Contains(msg, "-> 400:") || strings.Contains(msg, "-> 401:") {
 		return c.JSON(fiber.Map{
 			"ok":           true,
-			"upstream_url": h.WA.BaseURL,
+			"upstream_url": h.WA.BaseURL(),
 			"latency_ms":   latency,
 			"checked_at":   time.Now().UTC().Format(time.RFC3339),
 			"note":         "core alive (returned 4xx — login/device id required)",
@@ -151,7 +158,7 @@ func (h *Handlers) healthUpstream(c *fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{
 		"ok":           false,
-		"upstream_url": h.WA.BaseURL,
+		"upstream_url": h.WA.BaseURL(),
 		"latency_ms":   latency,
 		"checked_at":   time.Now().UTC().Format(time.RFC3339),
 		"error":        msg,
@@ -200,18 +207,89 @@ func (h *Handlers) cleanupNow(c *fiber.Ctx) error {
 	})
 }
 
+// getCoreSettings — current core connection config untuk tab "Pengaturan".
+// Password TIDAK PERNAH dikembalikan — hanya flag apakah sudah diset,
+// meniru pola masked AI API key yang sudah ada di tab AI Reply.
+func (h *Handlers) getCoreSettings(c *fiber.Ctx) error {
+	cs, ok, err := h.Store.GetCoreSettings()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	if !ok {
+		// Belum pernah disave lewat form — tampilkan nilai yang sedang
+		// dipakai h.WA (di-seed dari env saat boot, lihat dashboard/main.go).
+		return c.JSON(fiber.Map{
+			"base_url":     h.WA.BaseURL(),
+			"user":         "",
+			"password_set": false,
+		})
+	}
+	return c.JSON(fiber.Map{
+		"base_url":     cs.BaseURL,
+		"user":         cs.User,
+		"password_set": cs.Password != "",
+	})
+}
+
+// updateCoreSettings — simpan + hot-swap config koneksi ke core. Password
+// kosong di body = pertahankan yang tersimpan (sama seperti pola masked AI
+// API key: user tidak perlu ketik ulang password yang sudah diset).
+func (h *Handlers) updateCoreSettings(c *fiber.Ctx) error {
+	var req struct {
+		BaseURL  string `json:"base_url"`
+		User     string `json:"user"`
+		Password string `json:"password"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid body: " + err.Error()})
+	}
+	req.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+	if req.BaseURL == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "base_url wajib diisi"})
+	}
+	if _, err := url.ParseRequestURI(req.BaseURL); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "base_url tidak valid: " + err.Error()})
+	}
+
+	password := req.Password
+	if password == "" {
+		existing, ok, err := h.Store.GetCoreSettings()
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		}
+		if ok {
+			password = existing.Password
+		}
+	}
+
+	cs := &store.CoreSettings{BaseURL: req.BaseURL, User: req.User, Password: password}
+	if err := h.Store.SetCoreSettings(cs); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.WA.UpdateConfig(cs.BaseURL, cs.User, cs.Password)
+	log.Printf("[settings] core connection updated -> %s", cs.BaseURL)
+
+	return c.JSON(fiber.Map{
+		"base_url":     cs.BaseURL,
+		"user":         cs.User,
+		"password_set": cs.Password != "",
+	})
+}
+
 // health returns a small JSON probe listing the dashboard's own routes.
 // Use it to verify you're talking to the rebuilt image (not a cached old one).
 func (h *Handlers) health(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"ok":           true,
 		"build":        "dashboard-v1.2-aireply",
-		"upstream_url": h.WA.BaseURL,
+		"upstream_url": h.WA.BaseURL(),
 		"routes": []string{
 			"GET    /api/_health",
 			"GET    /api/_health/upstream",
 			"GET    /api/_stats",
 			"POST   /api/_cleanup",
+			"GET    /api/settings/core",
+			"PUT    /api/settings/core",
 			"GET    /api/devices",
 			"POST   /api/devices",
 			"DELETE /api/devices/:id",

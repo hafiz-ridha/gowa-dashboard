@@ -1,20 +1,55 @@
 package aireply
 
 import (
+	"context"
 	"sync/atomic"
 	"time"
+
+	"github.com/sirupsen/logrus"
+
+	infraAI "github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/aireply"
 )
 
 // Global pause untuk seluruh AI Reply (semua device + semua chat).
 //
-// State disimpan in-memory via atomic pointer ke time.Time. Restart container
-// = otomatis resume — itu sengaja, supaya tidak ada "paused selamanya yang
-// terlupa" stuck di DB. Kalau perlu pause permanent, user set
-// AI_REPLY_ENABLED=false di src/.env (yang sudah ada).
+// State di-cache in-memory via atomic pointer supaya hot path (satu
+// IsPaused() check per pesan WhatsApp masuk) tidak perlu round-trip DB.
+// Sumber kebenaran tetap tabel ai_pause_state: di-hydrate sekali saat startup
+// (LoadPersistedPause) dan ditulis lagi setiap Pause()/Resume() (best-effort —
+// gagal tulis DB tidak menggagalkan request, in-memory state tetap berlaku
+// untuk proses yang sedang jalan).
 //
-// Suppression behavior: saat paused, HandleIncoming return true (claim
-// ownership), jadi static WHATSAPP_AUTO_REPLY juga tidak fire — total silent.
+// Sengaja PERSISTEN lintas restart: admin yang men-pause auto-reply
+// mengharapkan itu tetap ter-pause sampai dia sendiri yang resume, termasuk
+// setelah `docker compose up -d --build` untuk update core/dashboard.
 var globalPauseUntil atomic.Pointer[time.Time]
+
+// pauseRepo persists the pause deadline. nil-safe: pause still works
+// in-memory-only (pre-persistence behaviour) if never set, e.g. in tests.
+var pauseRepo *infraAI.Repository
+
+// SetPauseStore wires the persistence backend. Call once at startup, before
+// LoadPersistedPause.
+func SetPauseStore(r *infraAI.Repository) {
+	pauseRepo = r
+}
+
+// LoadPersistedPause hydrates the in-memory cache from storage. Call once at
+// startup, after SetPauseStore and before the server starts handling
+// incoming messages, so no message can slip through unpaused during boot.
+func LoadPersistedPause(ctx context.Context) error {
+	if pauseRepo == nil {
+		return nil
+	}
+	until, err := pauseRepo.GetPauseUntil(ctx)
+	if err != nil {
+		return err
+	}
+	if until != nil && time.Now().Before(*until) {
+		globalPauseUntil.Store(until)
+	}
+	return nil
+}
 
 // IsPaused — cek apakah AI Reply sedang di-pause global.
 // Auto-clear pointer kalau deadline sudah lewat (lazy cleanup).
@@ -25,6 +60,8 @@ func IsPaused() bool {
 	}
 	if time.Now().After(*t) {
 		// Deadline lewat, clear pointer supaya panggilan berikutnya cepat.
+		// DB row dibiarkan basi — LoadPersistedPause di restart berikutnya
+		// re-check timestamp-nya sebelum hydrate, jadi aman.
 		globalPauseUntil.CompareAndSwap(t, nil)
 		return false
 	}
@@ -33,7 +70,8 @@ func IsPaused() bool {
 
 // Pause AI Reply selama duration. duration <= 0 = pause tak terbatas
 // (clamped jadi 100 tahun supaya tetap representable). Return deadline.
-func Pause(duration time.Duration) time.Time {
+// Persists to storage (best-effort) so the pause survives a restart.
+func Pause(ctx context.Context, duration time.Duration) time.Time {
 	var until time.Time
 	if duration <= 0 {
 		until = time.Now().AddDate(100, 0, 0)
@@ -41,12 +79,14 @@ func Pause(duration time.Duration) time.Time {
 		until = time.Now().Add(duration)
 	}
 	globalPauseUntil.Store(&until)
+	persist(ctx, &until)
 	return until
 }
 
 // Resume — clear pause state. Aman dipanggil saat tidak sedang paused.
-func Resume() {
+func Resume(ctx context.Context) {
 	globalPauseUntil.Store(nil)
+	persist(ctx, nil)
 }
 
 // PauseStatus — return (paused, deadline). deadline nil kalau tidak paused.
@@ -60,4 +100,13 @@ func PauseStatus() (bool, *time.Time) {
 		return false, nil
 	}
 	return true, t
+}
+
+func persist(ctx context.Context, until *time.Time) {
+	if pauseRepo == nil {
+		return
+	}
+	if err := pauseRepo.SetPauseUntil(ctx, until); err != nil {
+		logrus.Warnf("AI Reply: failed to persist pause state (%v); in-memory state still applied for this process", err)
+	}
 }

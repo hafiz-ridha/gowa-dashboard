@@ -1358,5 +1358,12 @@ func (r *SQLiteRepository) getMigrations() []string {
 
 		// Migration 26
 		`CREATE INDEX IF NOT EXISTS idx_ai_logs_created ON ai_reply_logs(created_at)`,
+
+		// Migration 27: persisted global AI Reply pause state (survives restart)
+		`CREATE TABLE IF NOT EXISTS ai_pause_state (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			paused_until TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
 	}
 }

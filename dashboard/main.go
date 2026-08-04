@@ -35,7 +35,20 @@ func main() {
 	}
 	defer st.Close()
 
-	wac := wa.NewClient(cfg.WhatsAppBaseURL, cfg.WhatsAppUser, cfg.WhatsAppPassword)
+	// Core connection: settings tersimpan di dashboard.db menang begitu ada
+	// (diedit lewat tab "Pengaturan", hot-swap tanpa restart). Kalau belum
+	// pernah disave (fresh install), seed dari env/.env supaya form-nya
+	// langsung terisi nilai yang benar saat pertama dibuka.
+	coreBaseURL, coreUser, corePassword := cfg.WhatsAppBaseURL, cfg.WhatsAppUser, cfg.WhatsAppPassword
+	if cs, ok, err := st.GetCoreSettings(); err != nil {
+		log.Printf("[main] load core settings: %v (falling back to env)", err)
+	} else if ok {
+		coreBaseURL, coreUser, corePassword = cs.BaseURL, cs.User, cs.Password
+	} else if err := st.SetCoreSettings(&store.CoreSettings{BaseURL: coreBaseURL, User: coreUser, Password: corePassword}); err != nil {
+		log.Printf("[main] seed core settings from env: %v", err)
+	}
+
+	wac := wa.NewClient(coreBaseURL, coreUser, corePassword)
 	sched := scheduler.New(st, wac)
 	if err := sched.Start(); err != nil {
 		log.Fatalf("[main] start scheduler: %v", err)
@@ -114,7 +127,7 @@ func main() {
 
 	addr := cfg.DashboardHost + ":" + cfg.DashboardPort
 	log.Printf("[main] dashboard listening on http://%s", addr)
-	log.Printf("[main] proxying to WhatsApp API at %s", cfg.WhatsAppBaseURL)
+	log.Printf("[main] proxying to WhatsApp API at %s", wac.BaseURL())
 	if err := app.Listen(addr); err != nil {
 		log.Fatalf("[main] listen: %v", err)
 	}

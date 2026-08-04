@@ -51,7 +51,7 @@ Lihat [`how-to-use.md`](./how-to-use.md) untuk dokumentasi lengkap upstream. Rin
 
 ### Dashboard (`dashboard/`)
 
-UI web (Vue 3 + Semantic UI, di-embed via `go:embed`) dengan enam tab:
+UI web (Vue 3 + Semantic UI, di-embed via `go:embed`) dengan tujuh tab:
 
 | Tab                  | Fungsi                                                                                                          |
 |----------------------|-----------------------------------------------------------------------------------------------------------------|
@@ -60,7 +60,8 @@ UI web (Vue 3 + Semantic UI, di-embed via `go:embed`) dengan enam tab:
 | **Jadwal & Reminder**| CRUD jadwal: enable/disable, preview 5 fire-time berikutnya, tombol "Run Now" untuk uji manual, kolom next-run. |
 | **Broadcast**        | Kirim ke banyak nomor sekaligus (paste comma/newline/space-separated, auto-normalize 08xxx → 62xxx). Anti-spam: random delay (min/max), batch break tiap N pesan, shuffle order, spintax `{a\|b\|c}` untuk variasi pesan. Live progress + cancel button + per-recipient log. |
 | **Riwayat**          | Log eksekusi global + per-jadwal (status sukses/error, response upstream, pesan error).                          |
-| **AI Reply**         | 4 sub-section yang nge-proxy ke core: **Config** (provider/model/prompt style/API key dengan masked-key indicator + test connection + **toggle "Apply ke semua device terhubung"** untuk fan-out config ke seluruh nomor logged-in), **Knowledgebase** (upload PDF/DOCX/TXT/MD + list + reindex + delete), **Chat Toggle** (opt-in per chat JID, auto-format nomor `08xxx`/`62xxx` → `@s.whatsapp.net`, **toggle apply-to-all** untuk enable AI di chat yg sama di seluruh device), **Logs** (audit eksekusi dengan filter chat/status). Setting tersimpan di core (per-device, encrypted at rest). |
+| **AI Reply**         | 4 sub-section yang nge-proxy ke core: **Config** (provider/model/prompt style/API key dengan masked-key indicator + test connection + **toggle "Apply ke semua device terhubung"** untuk fan-out config ke seluruh nomor logged-in), **Knowledgebase** (upload PDF/DOCX/TXT/MD + list + reindex + delete), **Chat Toggle** (opt-in per chat JID, auto-format nomor `08xxx`/`62xxx` → `@s.whatsapp.net`, **toggle apply-to-all** untuk enable AI di chat yg sama di seluruh device), **Logs** (audit eksekusi dengan filter chat/status). Setting tersimpan di core (per-device, encrypted at rest). Pause/Resume global **persisten lintas restart** (tabel `ai_pause_state`) — sekali di-pause, tetap pause sampai ditekan Resume manual, termasuk setelah `docker compose up -d --build` update core. |
+| **Pengaturan**       | Form Core URL + basic-auth credential (username/password) untuk koneksi dashboard → gowa-core. Runtime-editable tanpa restart — simpan di `dashboard.db`, hot-swap langsung ke client HTTP dashboard, langsung men-trigger re-check badge "API Core" di header. Password di-mask di semua response API (kosongkan field saat save = tidak diubah). |
 
 Kemampuan inti dashboard:
 
@@ -114,6 +115,7 @@ Dokumentasi nginx detail: [`docs/aapanel-nginx.conf.example`](./docs/aapanel-ngi
 ├── docker-compose.yml          # Hanya core
 ├── docker-compose.full.yml     # Core + dashboard
 ├── docker-compose.aapanel.yml  # Versi untuk aaPanel (bind 127.0.0.1 + reverse proxy)
+├── docker-compose.dashboard-only.yml  # Hanya dashboard, core dikelola/di-update terpisah
 ├── docs/                       # OpenAPI core, dokumentasi webhook & Chatwoot
 ├── how-to-use.md               # Manual lengkap core
 └── readme.md                   # File ini
@@ -138,6 +140,16 @@ Untuk deploy di aaPanel (port di-bind ke loopback supaya tidak bentrok, expose v
 ```bash
 docker compose -f docker-compose.aapanel.yml up -d --build
 ```
+
+#### Instalasi dashboard TERPISAH dari core
+
+Kalau gowa-core sudah/mau di-install & di-update sendiri (server lain, versi lain, atau memang cuma mau kelola dashboard-nya), pakai [`docker-compose.dashboard-only.yml`](./docker-compose.dashboard-only.yml) — file ini **tidak punya service core sama sekali**, jadi update/rebuild core tidak pernah menyentuh container dashboard:
+
+```bash
+docker compose -f docker-compose.dashboard-only.yml up -d --build
+```
+
+`WHATSAPP_API_URL` di file ini cuma dipakai sebagai nilai awal (seed) saat dashboard pertama kali boot. Setelah itu, buka tab **Pengaturan** di dashboard untuk mengisi/mengubah Core URL + username/password basic-auth kapan saja — tersimpan di `dashboard.db` dan langsung dipakai (hot-swap), tanpa perlu restart container. Cocok kalau core-nya jalan di server/domain lain.
 
 ### Opsi B — Lokal tanpa Docker
 
@@ -195,9 +207,9 @@ Prioritas: **CLI flag > environment variable > `.env`**.
 | `DASHBOARD_DB`          | `dashboard.db`           | Path file SQLite (dalam Docker default: `/data/dashboard.db`).            |
 | `DASHBOARD_TZ`          | `Local`                  | Timezone default jadwal baru (mis. `Asia/Jakarta`).                       |
 | `DASHBOARD_BASIC_AUTH`  | (kosong)                 | `user:pass` untuk proteksi UI dashboard. Kosong = terbuka.                |
-| `WHATSAPP_API_URL`      | `http://localhost:3000`  | URL core REST API (di Docker: `http://whatsapp_go:3000`).                 |
-| `WHATSAPP_API_USER`     | (kosong)                 | Basic auth user untuk core (jika `APP_BASIC_AUTH` di core diaktifkan).    |
-| `WHATSAPP_API_PASSWORD` | (kosong)                 | Basic auth password untuk core.                                            |
+| `WHATSAPP_API_URL`      | `http://localhost:3000`  | URL core REST API (di Docker: `http://whatsapp_go:3000`). **Seed pertama boot saja** — setelah itu bisa diubah lewat tab **Pengaturan** di dashboard (tersimpan di `dashboard.db`, hot-swap tanpa restart). |
+| `WHATSAPP_API_USER`     | (kosong)                 | Basic auth user untuk core (jika `APP_BASIC_AUTH` di core diaktifkan). Seed-only, sama seperti di atas. |
+| `WHATSAPP_API_PASSWORD` | (kosong)                 | Basic auth password untuk core. Seed-only, sama seperti di atas.           |
 | `DASHBOARD_LOG_RETENTION_DAYS` | `30`              | Auto-cleanup: hapus `schedule_logs` & broadcasts selesai yang > N hari. `0` = nonaktif. |
 | `DASHBOARD_CLEANUP_INTERVAL_HOURS` | `6`           | Interval worker cleanup (jam). Min 1. Default 6 jam.                      |
 
@@ -240,6 +252,8 @@ Semua di-prefix `/api`. Endpoint device adalah proxy ke core (otomatis menyisipk
 | `GET`    | `/api/_health/upstream`       | Live ping ke core. Return `{ok, latency_ms, checked_at, upstream_url}`. UI pakai utk badge **API Core Connected**. |
 | `GET`    | `/api/_stats`                 | Row counts per tabel + retention config (untuk admin/maintenance UI).   |
 | `POST`   | `/api/_cleanup`               | Trigger cleanup manual. Query: `?days=N` override retention. Return `{deleted_*}` per tabel. |
+| `GET`    | `/api/settings/core`          | Config koneksi ke core saat ini: `{base_url, user, password_set}`. Password asli tidak pernah dikembalikan. |
+| `PUT`    | `/api/settings/core`          | Simpan + hot-swap config koneksi ke core. Body `{base_url, user, password}`. Password kosong = pertahankan yang tersimpan. |
 | `GET`    | `/api/devices`                | List semua device.                                           |
 | `POST`   | `/api/devices`                | Buat device baru. Body: `{"device_id":"alias"}`.             |
 | `DELETE` | `/api/devices/:id`            | Hapus device.                                                |
@@ -280,7 +294,7 @@ Semua di-prefix `/api`. Endpoint device adalah proxy ke core (otomatis menyisipk
 | `POST`   | `/api/aireply/config/apply-to-all` | Fan-out: simpan config AI **dan** replikasi chat-toggles ke semua device logged_in. Query `?with_chats=false` untuk skip chat replication (default true). Body sama dengan PUT `/aireply/config`. Return `{success_count, total, results[], chat_sync{source_chats,target_devices,applied_ok,applied_fail,errors}}`. **Penting**: tanpa replikasi chat-toggle, device kedua punya config tapi tidak balas otomatis. |
 | `POST`   | `/api/aireply/chat-settings/:chat_jid/apply-to-all` | Fan-out: enable/disable toggle AI untuk satu chat JID di seluruh device. Body `{"enabled":bool}`. Berguna untuk customer multi-channel. |
 | `GET`    | `/api/aireply/multi-device-health` | Audit per-device readiness: `has_config`, `has_api_key`, `chat_enabled_count`, `status` (ready/no_config/no_api_key/no_chats), `hint`. Pakai untuk diagnose kenapa device tertentu tidak balas auto. |
-| `POST`   | `/api/aireply/pause` | Pause global AI Reply (semua device + semua chat). Body: `{"minutes": N}`. N ≤ 0 = indefinite (sampai resume manual atau container restart). Saat paused, AI dan static auto-reply dua-duanya skip. State in-memory di core. |
+| `POST`   | `/api/aireply/pause` | Pause global AI Reply (semua device + semua chat). Body: `{"minutes": N}`. N ≤ 0 = indefinite (sampai Resume manual). Saat paused, AI dan static auto-reply dua-duanya skip. State **persisten** (tabel `ai_pause_state` di core) — tetap paused lintas restart/update container sampai eksplisit di-Resume. |
 | `POST`   | `/api/aireply/resume` | Cabut pause, AI Reply kembali aktif. |
 | `GET`    | `/api/aireply/pause-status` | `{paused, paused_until, remaining_seconds}`. Dashboard SPA poll setiap 30 detik saat tab AI Reply terbuka. |
 

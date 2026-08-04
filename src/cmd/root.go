@@ -469,6 +469,10 @@ func initApp() {
 			logrus.Warnf("AI Reply: sqlite-vec init failed (%v); feature will run without vector search until fixed", err)
 		}
 		aiReplyService = aireplyUC.NewService(aiRepo, vecStore, chatStorageRepo)
+		aireplyUC.SetPauseStore(aiRepo)
+		if err := aireplyUC.LoadPersistedPause(ctx); err != nil {
+			logrus.Warnf("AI Reply: failed to load persisted pause state (%v); starting unpaused", err)
+		}
 		whatsapp.RegisterAIReplyHandler(aiReplyService)
 		logrus.Info("AI Reply feature enabled")
 	}

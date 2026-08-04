@@ -85,6 +85,18 @@ type BroadcastRecipient struct {
 	SentAt      *time.Time `json:"sent_at,omitempty"`
 }
 
+// CoreSettings holds the dashboard's connection info for the upstream gowa
+// core REST API. Single row (id=1) — editable at runtime from the
+// "Pengaturan" tab instead of only via WHATSAPP_API_URL/_USER/_PASSWORD env
+// vars at boot. Password is stored as-is (dashboard.db is not encrypted
+// anywhere else either); API responses must mask it.
+type CoreSettings struct {
+	BaseURL   string    `json:"base_url"`
+	User      string    `json:"user"`
+	Password  string    `json:"password"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type Store struct {
 	DB *sql.DB
 }
@@ -182,6 +194,14 @@ CREATE TABLE IF NOT EXISTS broadcast_recipients (
 );
 CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_bc_status ON broadcast_recipients(broadcast_id, status);
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts(status);
+
+CREATE TABLE IF NOT EXISTS core_settings (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    base_url   TEXT NOT NULL DEFAULT '',
+    user       TEXT NOT NULL DEFAULT '',
+    password   TEXT NOT NULL DEFAULT '',
+    updated_at DATETIME NOT NULL
+);
 `)
 	return err
 }
@@ -513,6 +533,37 @@ func (s *Store) DeleteBroadcast(id int64) error {
 func (s *Store) MarkOrphanedRunningBroadcastsAsCancelled() error {
 	_, err := s.DB.Exec(`UPDATE broadcasts SET status='cancelled', finished_at=?, updated_at=? WHERE status='running'`,
 		time.Now().UTC(), time.Now().UTC())
+	return err
+}
+
+// --- Core connection settings ---------------------------------------------
+
+// GetCoreSettings returns the persisted core URL/credentials. ok=false when
+// no row exists yet (fresh install — caller should seed from env).
+func (s *Store) GetCoreSettings() (*CoreSettings, bool, error) {
+	row := s.DB.QueryRow(`SELECT base_url, user, password, updated_at FROM core_settings WHERE id = 1`)
+	var cs CoreSettings
+	err := row.Scan(&cs.BaseURL, &cs.User, &cs.Password, &cs.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return &cs, true, nil
+}
+
+// SetCoreSettings upserts the single settings row.
+func (s *Store) SetCoreSettings(cs *CoreSettings) error {
+	cs.UpdatedAt = time.Now().UTC()
+	_, err := s.DB.Exec(`
+		INSERT INTO core_settings (id, base_url, user, password, updated_at) VALUES (1, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			base_url = excluded.base_url,
+			user = excluded.user,
+			password = excluded.password,
+			updated_at = excluded.updated_at`,
+		cs.BaseURL, cs.User, cs.Password, cs.UpdatedAt)
 	return err
 }
 
