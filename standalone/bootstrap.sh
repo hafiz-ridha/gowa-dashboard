@@ -81,8 +81,21 @@ tar -xzf "$ARCHIVE" -C "$WORK" || fail "arsip rusak / gagal diekstrak."
 
 # Folder hasil ekstrak bernama <repo>-<ref-dengan-slash-jadi-dash>.
 SRC="$(find "$WORK" -maxdepth 2 -type d -name standalone 2>/dev/null | head -1)"
-[ -n "$SRC" ] || fail "folder 'standalone/' tidak ada di arsip.
-Ref '${REF}' mungkin belum berisi paket standalone. Coba GOWA_REF=main."
+if [ -z "$SRC" ]; then
+    red "GAGAL: branch/tag '${REF}' tidak berisi folder 'standalone/'."
+    echo "" >&2
+    echo "Paket standalone belum ada di ref itu. Pilih ref yang benar dengan" >&2
+    echo "GOWA_REF, contoh:" >&2
+    echo "" >&2
+    echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/BRANCH/standalone/bootstrap.sh \\" >&2
+    echo "    | sudo GOWA_REF=BRANCH sh -s -- ${DOMAIN:-DOMAIN-ANDA}" >&2
+    echo "" >&2
+    echo "Daftar branch yang tersedia:" >&2
+    $DLQ "https://api.github.com/repos/${REPO}/branches" 2>/dev/null \
+        | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | sed 's/.*"\([^"]*\)"$/  - \1/' >&2 || echo "  (gagal mengambil daftar branch)" >&2
+    exit 1
+fi
 
 info "Paket: $SRC"
 green "OK"
