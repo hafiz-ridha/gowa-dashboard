@@ -56,6 +56,10 @@ Yang dilakukan `bootstrap.sh`:
    perintah ini mengeksekusi kode dari internet
 4. Menjalankan `install.sh` (lihat rinciannya di Cara B langkah 3)
 
+Login dashboard dibuat otomatis dan ditampilkan di akhir. Untuk menentukan
+sendiri, tambahkan `GOWA_BASIC_AUTH='user:password'` — lihat
+[Login dashboard](#login-dashboard-basic-auth).
+
 Memasang dari branch atau tag lain:
 
 ```bash
@@ -111,7 +115,8 @@ Installer akan:
 2. Memastikan port 18088 belum dipakai proses lain
 3. Membuat user sistem `gowadash` (tanpa login, non-root)
 4. Memasang binary ke `/opt/gowa-dashboard`
-5. Membuat `.env` (**tidak menimpa** kalau sudah ada)
+5. Membuat `.env` (**tidak menimpa** kalau sudah ada) dan memasang
+   login dashboard — lihat [Login dashboard](#login-dashboard-basic-auth)
 6. Memasang + menyalakan service systemd (auto-start saat reboot)
 7. Menunggu sampai dashboard benar-benar menjawab HTTP
 8. Menulis config nginx yang benar, `nginx -t`, lalu reload
@@ -160,25 +165,79 @@ sudo sh setup-nginx.sh gowa.domainku.com
 
 ---
 
-## Amankan dashboard (sangat disarankan)
+## Login dashboard (Basic Auth)
 
-Kalau dashboard bisa diakses dari internet, pasang basic auth:
+Installer **selalu** memasang login pada instalasi baru. Ini disengaja:
+dashboard ini bisa mengirim pesan WhatsApp atas nama Anda, jadi membiarkannya
+terbuka saat bisa diakses dari internet berisiko tinggi.
 
-```bash
-sudo nano /opt/gowa-dashboard/.env
-```
+Ada tiga cara mengaturnya saat instalasi:
 
-Ubah baris ini:
-
-```
-DASHBOARD_BASIC_AUTH=admin:passwordKuatAnda
-```
-
-Lalu:
+### 1. Tentukan sendiri lewat `GOWA_BASIC_AUTH`
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/hafiz-ridha/gowa-dashboard/main/standalone/bootstrap.sh \
+  | sudo GOWA_BASIC_AUTH='admin:RahasiaKuat123' sh -s -- gowa.domainku.com
+```
+
+Atau kalau memakai paket manual:
+
+```bash
+sudo GOWA_BASIC_AUTH='admin:RahasiaKuat123' sh install.sh gowa.domainku.com
+```
+
+Password boleh memuat `:` (pemisah hanya `:` pertama), juga boleh memuat
+karakter seperti `| / & $ " '` — semuanya ditulis apa adanya ke `.env`.
+Username tidak boleh memuat `:`.
+
+### 2. Ditanyakan interaktif
+
+Jalankan `install.sh` langsung dari terminal tanpa `GOWA_BASIC_AUTH`:
+
+```bash
+sudo sh install.sh gowa.domainku.com
+```
+
+Installer menanyakan username (default `admin`) dan password (input
+disembunyikan, diminta dua kali). Kosongkan password untuk dibuat otomatis.
+
+### 3. Dibuat otomatis (default)
+
+Kalau tidak ada `GOWA_BASIC_AUTH` dan tidak ada terminal interaktif — misal
+lewat `curl | sh` — installer membuat password acak 20 karakter dan
+**menampilkannya sekali** di akhir:
+
+```
+==============================================
+ LOGIN DASHBOARD — CATAT SEKARANG
+==============================================
+  Username : admin
+  Password : Xy9Zq2Lm8Kt4Rw7Bn1Vc
+```
+
+Password juga tersimpan di `/opt/gowa-dashboard/.env` kalau terlewat dicatat.
+
+### Sengaja tanpa login
+
+Hanya kalau dashboard benar-benar tidak bisa dijangkau dari internet:
+
+```bash
+... | sudo GOWA_BASIC_AUTH=none sh -s -- gowa.domainku.com
+```
+
+### Mengganti login setelah terpasang
+
+```bash
+sudo nano /opt/gowa-dashboard/.env      # ubah baris DASHBOARD_BASIC_AUTH
 sudo systemctl restart gowa-dashboard
 ```
+
+Install ulang / upgrade **tidak** mengubah login yang sudah ada — `.env` tidak
+pernah ditimpa.
+
+> Verifikasi cepat: `curl -i https://gowa.domainku.com/api/_health` harus
+> menjawab **401** kalau login aktif. Kalau menjawab 200 tanpa kredensial,
+> berarti login belum aktif.
 
 ---
 
@@ -255,6 +314,31 @@ Penyebab yang paling sering:
 | `address already in use` | Port 18088 dipakai proses lain. Cek: `ss -ltnp \| grep 18088`. Hentikan proses itu atau ubah `DASHBOARD_PORT` di `.env` **dan** port di config nginx. |
 | `unable to open database file` | Folder data bermasalah. Perbaiki: `sudo chown -R gowadash:gowadash /opt/gowa-dashboard` |
 | `permission denied` | Sama seperti di atas. |
+
+### Lupa password login dashboard
+
+Password tersimpan apa adanya di `.env`, jadi bisa dilihat kembali:
+
+```bash
+sudo grep DASHBOARD_BASIC_AUTH /opt/gowa-dashboard/.env
+```
+
+Ganti dengan yang baru:
+
+```bash
+sudo sed -i 's|^DASHBOARD_BASIC_AUTH=.*|DASHBOARD_BASIC_AUTH=admin:PasswordBaru|' \
+     /opt/gowa-dashboard/.env
+sudo systemctl restart gowa-dashboard
+```
+
+### Browser terus meminta login / login ditolak terus
+
+- Pastikan tidak ada spasi tak sengaja di sekitar `:` pada `.env`
+  (formatnya harus `user:password`, tanpa spasi)
+- Username tidak boleh memuat `:` — hanya password yang boleh
+- Setelah mengubah `.env`, service **wajib** di-restart:
+  `sudo systemctl restart gowa-dashboard`
+- Cek nilai yang benar-benar terbaca: `sudo systemctl show gowa-dashboard | grep -i basic`
 
 ### Badge "API Core Disconnected" (merah)
 

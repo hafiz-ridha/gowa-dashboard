@@ -18,8 +18,20 @@
 #
 #   curl -fsSL .../bootstrap.sh | sudo GOWA_REF=v1.2.0 sh -s -- gowa.domainku.com
 #
+# LOGIN DASHBOARD (Basic Auth):
+#
+#   Tentukan sendiri:
+#     curl -fsSL .../bootstrap.sh | sudo GOWA_BASIC_AUTH='admin:RahasiaKuat123' sh -s -- gowa.domainku.com
+#
+#   Biarkan dibuat otomatis (password kuat, ditampilkan sekali di akhir):
+#     cukup jangan set GOWA_BASIC_AUTH
+#
+#   Sengaja tanpa login (TIDAK disarankan kalau bisa diakses dari internet —
+#   dashboard ini dapat mengirim WhatsApp dari device Anda):
+#     ... | sudo GOWA_BASIC_AUTH=none sh -s -- gowa.domainku.com
+#
 # AMAN DIULANG: menjalankan ulang = upgrade. File .env dan database
-# (data/dashboard.db) tidak pernah ditimpa.
+# (data/dashboard.db) tidak pernah ditimpa — termasuk login yang sudah ada.
 
 set -e
 
@@ -169,6 +181,14 @@ for f in "${SRC}"/*.sh; do
 done
 
 cd "$SRC"
+
+# Teruskan pilihan login ke install.sh. `sudo VAR=x sh` sudah menaruh VAR di
+# environment, tapi di-export eksplisit supaya perilakunya sama kalau skrip
+# ini dipanggil dengan cara lain (mis. `sh bootstrap.sh` setelah `export`).
+if [ -n "${GOWA_BASIC_AUTH:-}" ]; then
+    export GOWA_BASIC_AUTH
+fi
+
 if [ -n "$DOMAIN" ]; then
     sh ./install.sh "$DOMAIN"
 else
