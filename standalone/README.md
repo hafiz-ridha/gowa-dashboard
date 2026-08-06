@@ -231,14 +231,21 @@ Username tidak boleh memuat `:`.
 
 ### 2. Ditanyakan interaktif
 
-Jalankan `install.sh` langsung dari terminal tanpa `GOWA_BASIC_AUTH`:
+Jalankan dari terminal tanpa `GOWA_BASIC_AUTH` — berlaku untuk **kedua** mode
+(systemd maupun Docker):
 
 ```bash
-sudo sh install.sh gowa.domainku.com
+sudo sh install.sh gowa.domainku.com                    # mode systemd
+sudo GOWA_MODE=docker sh bootstrap.sh gowa.domainku.com  # mode Docker
 ```
 
 Installer menanyakan username (default `admin`) dan password (input
 disembunyikan, diminta dua kali). Kosongkan password untuk dibuat otomatis.
+
+> Prompt muncul selama ada terminal (`/dev/tty`), termasuk saat dijalankan
+> lewat `curl ... | sudo sh`. Kalau memang tidak ada terminal — misal dari
+> cron — installer beralih ke pembuatan password otomatis, bukan membiarkan
+> dashboard terbuka.
 
 ### 3. Dibuat otomatis (default)
 

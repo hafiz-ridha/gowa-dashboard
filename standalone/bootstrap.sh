@@ -243,43 +243,39 @@ atau:                   apt-get install -y docker-compose-plugin"
         # Salin semuanya KECUALI data/ dan .env supaya install ulang tidak
         # menimpa database maupun konfigurasi yang sudah ada.
         for item in bin Dockerfile docker-compose.yml docker-entrypoint.sh \
-                    setup-nginx.sh uninstall.sh .env.example README.md SHA256SUMS; do
+                    setup-nginx.sh uninstall.sh lib-common.sh \
+                    .env.example README.md SHA256SUMS; do
             [ -e "$item" ] && cp -r "$item" "$DOCKER_DIR/" 2>/dev/null || true
         done
         cd "$DOCKER_DIR"
         mkdir -p data
         SRC="$DOCKER_DIR"   # supaya pesan di akhir menunjuk lokasi yang benar
 
+        # Fungsi bersama dengan install.sh — termasuk prompt interaktif dan
+        # validasi format GOWA_BASIC_AUTH. Sebelumnya logika ini diduplikasi
+        # di sini dan langsung menyimpang: mode docker kehilangan prompt DAN
+        # kehilangan validasi, sehingga nilai tanpa ':' diterima diam-diam
+        # padahal membuat dashboard TERBUKA (main.go hanya memasang middleware
+        # kalau `len(parts) == 2`).
+        [ -f lib-common.sh ] || fail "lib-common.sh tidak ada — paket tidak lengkap."
+        # shellcheck source=lib-common.sh
+        . ./lib-common.sh
+
         # Siapkan .env untuk container (compose membacanya lewat env_file).
-        # install.sh tidak dipakai di mode ini, jadi login diatur di sini.
         if [ -f .env ]; then
-            info ".env sudah ada di paket — dipakai apa adanya."
+            info ".env sudah ada di ${DOCKER_DIR} — dipakai apa adanya."
+            info "Login dashboard tetap seperti sebelumnya."
+            AUTH_GENERATED=0; AUTH_DISABLED=0; AUTH_USER=""
         else
             cp .env.example .env
             # Di dalam container, bind ke semua interface: isolasi dilakukan
             # oleh port mapping compose (127.0.0.1:18088), bukan oleh app.
-            sed -i 's|^DASHBOARD_HOST=.*|DASHBOARD_HOST=0.0.0.0|' .env
-            sed -i 's|^DASHBOARD_PORT=.*|DASHBOARD_PORT=8088|'    .env
-            sed -i 's|^DASHBOARD_DB=.*|DASHBOARD_DB=/data/dashboard.db|' .env
+            set_env DASHBOARD_HOST "0.0.0.0"             .env
+            set_env DASHBOARD_PORT "8088"                .env
+            set_env DASHBOARD_DB   "/data/dashboard.db"  .env
 
-            if [ -n "${GOWA_BASIC_AUTH:-}" ] && [ "${GOWA_BASIC_AUTH}" != "none" ]; then
-                AUTH_LINE="$GOWA_BASIC_AUTH"
-                AUTH_SHOWN=0
-            elif [ "${GOWA_BASIC_AUTH:-}" = "none" ]; then
-                AUTH_LINE=""
-                AUTH_SHOWN=0
-            else
-                # Default aman: sama seperti install.sh, jangan biarkan terbuka.
-                GEN_PASS="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 20)"
-                AUTH_LINE="admin:${GEN_PASS}"
-                AUTH_SHOWN=1
-            fi
-            # awk + ENVIRON: aman untuk password ber-karakter khusus (| / & \).
-            AUTH_VAL="$AUTH_LINE" awk '
-                index($0, "DASHBOARD_BASIC_AUTH=") == 1 {
-                    print "DASHBOARD_BASIC_AUTH=" ENVIRON["AUTH_VAL"]; next
-                } { print }
-            ' .env > .env.tmp && mv .env.tmp .env
+            resolve_basic_auth
+            apply_basic_auth .env
             chmod 0600 .env
         fi
 
@@ -319,13 +315,8 @@ Lihat detailnya:  cd ${SRC} && ${DC} logs --tail=50"
         echo "  Akses     : http://127.0.0.1:18088"
         [ -n "$DOMAIN" ] && echo "  Publik    : https://${DOMAIN}"
         echo ""
-        if [ "${AUTH_SHOWN:-0}" = "1" ]; then
-            yellow "LOGIN DASHBOARD — CATAT SEKARANG"
-            echo "  Username : admin"
-            echo "  Password : ${GEN_PASS}"
-            echo "  (tersimpan juga di ${SRC}/.env)"
-            echo ""
-        fi
+        print_auth_summary "${DOCKER_DIR}/.env" "cd ${DOCKER_DIR} && ${DC} restart"
+
         yellow "LANGKAH TERAKHIR — hubungkan ke gowa-core:"
         echo "  Buka dashboard -> tab \"Pengaturan\" -> isi Core URL -> Simpan."
         echo ""

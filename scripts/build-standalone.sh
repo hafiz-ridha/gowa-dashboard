@@ -56,7 +56,8 @@ info "standalone/bin/ + SHA256SUMS disegarkan (dipakai bootstrap.sh)"
 # dan satu CR saja di install.sh membuat Linux menolak dengan
 # "/bin/sh^M: bad interpreter". Pengaman lapis kedua, murah.
 cd "$ROOT"
-for f in install.sh setup-nginx.sh uninstall.sh bootstrap.sh gowa-dashboard.service \
+for f in install.sh setup-nginx.sh uninstall.sh bootstrap.sh lib-common.sh \
+         gowa-dashboard.service \
          .env.example nginx-aapanel.conf.example SHA256SUMS \
          Dockerfile docker-entrypoint.sh docker-compose.yml README.md; do
     tr -d '\r' < "standalone/${f}" > "${STAGE}/${f}"
