@@ -30,6 +30,18 @@
 #   dashboard ini dapat mengirim WhatsApp dari device Anda):
 #     ... | sudo GOWA_BASIC_AUTH=none sh -s -- gowa.domainku.com
 #
+# CARA JALAN — pilih lewat GOWA_MODE:
+#
+#   GOWA_MODE=systemd  (DEFAULT)
+#     Binary native + service systemd. TIDAK membuat container Docker.
+#     Cek dengan: systemctl status gowa-dashboard
+#
+#   GOWA_MODE=docker
+#     Membuat container Docker bernama `gowa-dashboard`.
+#     Cek dengan: docker ps | grep gowa-dashboard
+#
+#     ... | sudo GOWA_MODE=docker sh -s -- gowa.domainku.com
+#
 # AMAN DIULANG: menjalankan ulang = upgrade. File .env dan database
 # (data/dashboard.db) tidak pernah ditimpa — termasuk login yang sudah ada.
 
@@ -189,8 +201,138 @@ if [ -n "${GOWA_BASIC_AUTH:-}" ]; then
     export GOWA_BASIC_AUTH
 fi
 
-if [ -n "$DOMAIN" ]; then
-    sh ./install.sh "$DOMAIN"
-else
-    sh ./install.sh
-fi
+MODE="${GOWA_MODE:-systemd}"
+
+case "$MODE" in
+    systemd)
+        info "Mode: systemd (binary native — TIDAK membuat container Docker)"
+        if [ -n "$DOMAIN" ]; then
+            sh ./install.sh "$DOMAIN"
+        else
+            sh ./install.sh
+        fi
+        ;;
+
+    docker)
+        info "Mode: docker (membuat container 'gowa-dashboard')"
+
+        command -v docker >/dev/null 2>&1 || fail "docker tidak terpasang di server ini.
+Pasang Docker dulu (aaPanel -> App Store -> Docker), atau pakai mode default:
+  hilangkan GOWA_MODE=docker  (memakai systemd, tanpa Docker)"
+
+        # `docker compose` (v2, plugin) vs `docker-compose` (v1, terpisah).
+        if docker compose version >/dev/null 2>&1; then
+            DC="docker compose"
+        elif command -v docker-compose >/dev/null 2>&1; then
+            DC="docker-compose"
+        else
+            fail "docker ada, tapi Compose tidak.
+Pasang plugin compose:  yum install -y docker-compose-plugin
+atau:                   apt-get install -y docker-compose-plugin"
+        fi
+        info "Compose: ${DC}"
+
+        # PENTING: pindahkan paket ke lokasi TETAP sebelum menjalankan compose.
+        # $WORK adalah folder sementara yang dihapus trap EXIT, sedangkan
+        # docker-compose.yml memakai bind mount `./data:/data` — kalau compose
+        # dijalankan dari folder sementara, database ikut terhapus begitu skrip
+        # selesai, dan perintah logs/restart/down juga kehilangan project dir.
+        DOCKER_DIR="/opt/gowa-dashboard-docker"
+        info "Memasang paket ke ${DOCKER_DIR}"
+        mkdir -p "$DOCKER_DIR"
+        # Salin semuanya KECUALI data/ dan .env supaya install ulang tidak
+        # menimpa database maupun konfigurasi yang sudah ada.
+        for item in bin Dockerfile docker-compose.yml docker-entrypoint.sh \
+                    setup-nginx.sh uninstall.sh .env.example README.md SHA256SUMS; do
+            [ -e "$item" ] && cp -r "$item" "$DOCKER_DIR/" 2>/dev/null || true
+        done
+        cd "$DOCKER_DIR"
+        mkdir -p data
+        SRC="$DOCKER_DIR"   # supaya pesan di akhir menunjuk lokasi yang benar
+
+        # Siapkan .env untuk container (compose membacanya lewat env_file).
+        # install.sh tidak dipakai di mode ini, jadi login diatur di sini.
+        if [ -f .env ]; then
+            info ".env sudah ada di paket — dipakai apa adanya."
+        else
+            cp .env.example .env
+            # Di dalam container, bind ke semua interface: isolasi dilakukan
+            # oleh port mapping compose (127.0.0.1:18088), bukan oleh app.
+            sed -i 's|^DASHBOARD_HOST=.*|DASHBOARD_HOST=0.0.0.0|' .env
+            sed -i 's|^DASHBOARD_PORT=.*|DASHBOARD_PORT=8088|'    .env
+            sed -i 's|^DASHBOARD_DB=.*|DASHBOARD_DB=/data/dashboard.db|' .env
+
+            if [ -n "${GOWA_BASIC_AUTH:-}" ] && [ "${GOWA_BASIC_AUTH}" != "none" ]; then
+                AUTH_LINE="$GOWA_BASIC_AUTH"
+                AUTH_SHOWN=0
+            elif [ "${GOWA_BASIC_AUTH:-}" = "none" ]; then
+                AUTH_LINE=""
+                AUTH_SHOWN=0
+            else
+                # Default aman: sama seperti install.sh, jangan biarkan terbuka.
+                GEN_PASS="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 20)"
+                AUTH_LINE="admin:${GEN_PASS}"
+                AUTH_SHOWN=1
+            fi
+            # awk + ENVIRON: aman untuk password ber-karakter khusus (| / & \).
+            AUTH_VAL="$AUTH_LINE" awk '
+                index($0, "DASHBOARD_BASIC_AUTH=") == 1 {
+                    print "DASHBOARD_BASIC_AUTH=" ENVIRON["AUTH_VAL"]; next
+                } { print }
+            ' .env > .env.tmp && mv .env.tmp .env
+            chmod 0600 .env
+        fi
+
+        info "Build image + start container..."
+        $DC up -d --build || fail "docker compose gagal.
+Lihat detailnya:  cd ${SRC} && ${DC} logs --tail=50"
+
+        # Buktikan container benar-benar JALAN, bukan cuma 'created' lalu mati.
+        sleep 3
+        if ! docker ps --filter 'name=gowa-dashboard' --filter 'status=running' \
+             --format '{{.Names}}' 2>/dev/null | grep -q gowa-dashboard; then
+            red "Container tidak dalam status running. Log terakhir:"
+            $DC logs --tail=30 2>&1 | tail -30 >&2 || true
+            fail "container gagal jalan (lihat log di atas)."
+        fi
+        green "OK: container 'gowa-dashboard' running."
+        docker ps --filter 'name=gowa-dashboard' \
+            --format '  {{.Names}}  {{.Status}}  {{.Ports}}' 2>/dev/null || true
+
+        # Reverse proxy: container di-bind ke 127.0.0.1:18088 oleh compose.
+        if [ -n "$DOMAIN" ]; then
+            sh ./setup-nginx.sh "$DOMAIN" 18088 || fail "konfigurasi nginx gagal."
+        else
+            info "Domain tidak diberikan — nginx dilewati."
+            info "Set nanti:  sudo sh setup-nginx.sh DOMAIN-ANDA 18088"
+        fi
+
+        echo ""
+        green "=============================================="
+        green " GoWA Dashboard (Docker) berhasil dijalankan"
+        green "=============================================="
+        echo "  Container : gowa-dashboard"
+        echo "  Data      : ${SRC}/data  (bind mount ke /data)"
+        echo "  Log       : cd ${SRC} && ${DC} logs -f"
+        echo "  Restart   : cd ${SRC} && ${DC} restart"
+        echo "  Stop      : cd ${SRC} && ${DC} down"
+        echo "  Akses     : http://127.0.0.1:18088"
+        [ -n "$DOMAIN" ] && echo "  Publik    : https://${DOMAIN}"
+        echo ""
+        if [ "${AUTH_SHOWN:-0}" = "1" ]; then
+            yellow "LOGIN DASHBOARD — CATAT SEKARANG"
+            echo "  Username : admin"
+            echo "  Password : ${GEN_PASS}"
+            echo "  (tersimpan juga di ${SRC}/.env)"
+            echo ""
+        fi
+        yellow "LANGKAH TERAKHIR — hubungkan ke gowa-core:"
+        echo "  Buka dashboard -> tab \"Pengaturan\" -> isi Core URL -> Simpan."
+        echo ""
+        ;;
+
+    *)
+        fail "GOWA_MODE tidak dikenal: '${MODE}'
+Pilihan: systemd (default) atau docker"
+        ;;
+esac

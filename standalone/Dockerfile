@@ -20,13 +20,23 @@ RUN addgroup -g "${APP_GID}" dash && \
 
 WORKDIR /app
 
-# TARGETARCH diisi otomatis oleh buildkit (amd64 / arm64).
-ARG TARGETARCH=amd64
-COPY bin/whatsapp-dashboard-linux-${TARGETARCH} /app/dashboard
+# Kedua binary disalin, lalu entrypoint memilih yang sesuai saat container
+# START berdasarkan `uname -m`.
+#
+# Sebelumnya di sini pakai `ARG TARGETARCH` + COPY satu binary. Itu BUG:
+# TARGETARCH hanya diisi otomatis oleh BuildKit/buildx. Dengan classic
+# builder (masih dipakai Docker Manager aaPanel dan `docker compose build`
+# tanpa BuildKit), nilainya kosong sehingga jatuh ke default `amd64` —
+# di server ARM container ter-build dengan binary amd64 lalu langsung mati
+# "exec format error". Container terlihat "tidak terbuat" padahal terbuat
+# tapi crash seketika. Memilih saat runtime menghilangkan seluruh kelas
+# masalah ini, apa pun builder-nya.
+COPY bin/whatsapp-dashboard-linux-amd64 /app/bin/
+COPY bin/whatsapp-dashboard-linux-arm64 /app/bin/
 COPY docker-entrypoint.sh /entrypoint.sh
 
 RUN sed -i 's/\r$//' /entrypoint.sh && \
-    chmod +x /entrypoint.sh /app/dashboard && \
+    chmod +x /entrypoint.sh /app/bin/whatsapp-dashboard-linux-* && \
     mkdir -p /data && \
     chown -R dashuser:dash /app /data
 

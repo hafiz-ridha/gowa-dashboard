@@ -147,21 +147,60 @@ perubahan langsung berlaku.
 
 ---
 
-## Cara C — Install via Docker (alternatif)
+## Cara C — Install sebagai container Docker
 
-Kalau Anda lebih suka container (aaPanel → Docker sudah terpasang):
+> **Cara A dan B TIDAK membuat container Docker.** Keduanya memasang binary
+> native + service systemd, jadi `docker ps` akan kosong — itu memang
+> perilakunya, bukan kegagalan. Cek dengan `systemctl status gowa-dashboard`.
+> Kalau Anda memang menginginkan container, pakai cara ini.
+
+### Lewat one-liner
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hafiz-ridha/gowa-dashboard/main/standalone/bootstrap.sh \
+  | sudo GOWA_MODE=docker sh -s -- gowa.domainku.com
+```
+
+Paket dipasang ke `/opt/gowa-dashboard-docker` (lokasi tetap, supaya database
+di `./data` tidak ikut terhapus), image di-build, container dijalankan, lalu
+nginx diatur. Skrip memastikan container benar-benar berstatus **running** —
+kalau mati seketika, log-nya langsung ditampilkan.
+
+### Atau manual dari paket
 
 ```bash
 cd standalone
 docker compose up -d --build
+sudo sh setup-nginx.sh gowa.domainku.com 18088
 ```
 
-Build-nya cepat karena binary sudah ada — tidak ada kompilasi Go.
-Container bind ke `127.0.0.1:18088`, jadi tetap perlu reverse proxy:
+Build cepat karena binary sudah ada — tidak ada kompilasi Go di server.
+
+### Mengelola container
 
 ```bash
-sudo sh setup-nginx.sh gowa.domainku.com
+cd /opt/gowa-dashboard-docker
+docker compose ps          # status
+docker compose logs -f     # log berjalan
+docker compose restart     # restart
+docker compose down        # stop & hapus container (data tetap di ./data)
 ```
+
+Container bernama `gowa-dashboard`, bind ke `127.0.0.1:18088` (tidak terbuka
+langsung ke internet — akses lewat nginx).
+
+### Kenapa binary dipilih saat container start, bukan saat build
+
+Image menyertakan binary amd64 **dan** arm64; `docker-entrypoint.sh` memilih
+sesuai `uname -m` saat container dijalankan.
+
+Sebelumnya pemilihan dilakukan saat build lewat `ARG TARGETARCH`. Itu bug:
+`TARGETARCH` hanya diisi otomatis oleh BuildKit/buildx. Dengan classic builder
+— yang masih dipakai Docker Manager aaPanel dan `docker compose build` tanpa
+BuildKit — nilainya kosong sehingga jatuh ke default `amd64`. Di server ARM,
+container ter-build dengan binary amd64 lalu **langsung mati** dengan
+`exec format error`, sehingga tampak seperti "container tidak terbuat".
+Memilih saat runtime menghilangkan seluruh kelas masalah itu.
 
 ---
 
@@ -300,6 +339,29 @@ Satu saja dari keduanya sudah cukup membuat dashboard tidak berfungsi.
 Reverse proxy nyasar ke **gowa-core** (yang menyajikan ES module Vue), bukan ke
 dashboard. Pastikan `proxy_pass` menunjuk port dashboard (`18088`), bukan port
 core (`3000`). Jalankan `sudo sh setup-nginx.sh DOMAIN` untuk memperbaiki.
+
+### Container Docker tidak ada / `docker ps` kosong
+
+Cek dulu Anda memakai cara yang mana:
+
+```bash
+systemctl status gowa-dashboard     # Cara A/B (systemd) — ini yang default
+docker ps -a | grep gowa-dashboard  # Cara C (Docker)
+```
+
+- **`systemctl` menunjukkan `active (running)`** → dashboard **sudah jalan
+  normal** sebagai service systemd. Memang tidak ada container: Cara A dan B
+  tidak memakai Docker sama sekali. Tidak ada yang perlu diperbaiki.
+- **Ingin container** → pasang ulang dengan `GOWA_MODE=docker` (lihat Cara C).
+- **Container ada di `docker ps -a` tapi tidak di `docker ps`** → container
+  terbuat lalu mati. Lihat sebabnya:
+
+```bash
+cd /opt/gowa-dashboard-docker && docker compose logs --tail=50
+```
+
+  `exec format error` berarti arsitektur binary tidak cocok — rebuild tanpa
+  cache: `docker compose build --no-cache && docker compose up -d`.
 
 ### Service tidak mau start
 
