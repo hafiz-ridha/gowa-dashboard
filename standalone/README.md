@@ -17,12 +17,14 @@ standalone/
 ├── bin/
 │   ├── whatsapp-dashboard-linux-amd64    # Intel/AMD 64-bit (paling umum)
 │   └── whatsapp-dashboard-linux-arm64    # ARM 64-bit (Ampere, Graviton, dll)
+├── bootstrap.sh              # installer satu perintah, ambil dari GitHub
 ├── install.sh                # installer utama (systemd + nginx + verifikasi)
 ├── setup-nginx.sh            # khusus set reverse proxy nginx aaPanel
 ├── uninstall.sh              # hapus (database bisa dipertahankan)
 ├── gowa-dashboard.service    # template unit systemd
 ├── .env.example              # template konfigurasi
 ├── nginx-aapanel.conf.example# blok nginx untuk ditempel manual (kalau perlu)
+├── SHA256SUMS                # checksum binary (diverifikasi bootstrap.sh)
 ├── Dockerfile                # jalur Docker (alternatif)
 ├── docker-compose.yml        # jalur Docker (alternatif)
 └── README.md                 # file ini
@@ -30,9 +32,49 @@ standalone/
 
 ---
 
-## Cara A — Install langsung (disarankan)
+## Cara A — Satu perintah dari GitHub (paling cepat)
 
-Paling sederhana: tanpa Docker, jalan sebagai service systemd.
+Tanpa upload file, tanpa git clone, tanpa build. Cukup buat site-nya dulu
+(langkah 1 di Cara B), lalu jalankan di **Terminal aaPanel**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hafiz-ridha/gowa-dashboard/main/standalone/bootstrap.sh | sudo sh -s -- gowa.domainku.com
+```
+
+Ganti `gowa.domainku.com` dengan domain Anda. Tanpa argumen domain juga boleh —
+nginx dilewati, dashboard tetap jalan di `127.0.0.1:18088`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hafiz-ridha/gowa-dashboard/main/standalone/bootstrap.sh | sudo sh
+```
+
+Yang dilakukan `bootstrap.sh`:
+
+1. Mengunduh paket dari GitHub (satu arsip, snapshot konsisten)
+2. Memilih binary sesuai arsitektur CPU
+3. **Memverifikasi SHA256** binary sebelum dijalankan — penting karena
+   perintah ini mengeksekusi kode dari internet
+4. Menjalankan `install.sh` (lihat rinciannya di Cara B langkah 3)
+
+Memasang dari branch atau tag lain:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hafiz-ridha/gowa-dashboard/main/standalone/bootstrap.sh \
+  | sudo GOWA_REF=nama-branch sh -s -- gowa.domainku.com
+```
+
+> Kalau paket standalone belum ter-merge ke `main`, ganti `main` pada URL di
+> atas dengan nama branch-nya, dan tambahkan `GOWA_REF=nama-branch`.
+
+Upgrade ke versi terbaru: jalankan perintah yang sama lagi. `.env` dan
+database tidak pernah ditimpa.
+
+---
+
+## Cara B — Upload paket manual
+
+Kalau server tidak punya akses internet keluar, atau Anda ingin memeriksa
+isi paket dulu sebelum menjalankannya.
 
 ### 1. Buat site di aaPanel
 
@@ -100,7 +142,7 @@ perubahan langsung berlaku.
 
 ---
 
-## Cara B — Install via Docker (alternatif)
+## Cara C — Install via Docker (alternatif)
 
 Kalau Anda lebih suka container (aaPanel → Docker sudah terpasang):
 

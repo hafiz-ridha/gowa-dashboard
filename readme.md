@@ -141,7 +141,22 @@ Untuk deploy di aaPanel (port di-bind ke loopback supaya tidak bentrok, expose v
 docker compose -f docker-compose.aapanel.yml up -d --build
 ```
 
-#### Instalasi dashboard TERPISAH dari core
+#### Instalasi standalone di aaPanel — satu perintah
+
+Paling cepat, tanpa Docker/Go/upload file. Buat dulu site-nya di aaPanel
+(Website → Add site → PHP: Pure static), lalu di Terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hafiz-ridha/gowa-dashboard/main/standalone/bootstrap.sh | sudo sh -s -- gowa.domainku.com
+```
+
+Binary Linux statis (amd64/arm64) sudah dikompilasi dan ikut di repo, jadi
+tidak ada tahap build di server. Script memverifikasi SHA256 binary sebelum
+memasangnya, lalu mengatur systemd service + reverse proxy nginx (termasuk
+memperbaiki dua bug config aaPanel yang membuat POST `/api/*` jadi 404).
+Detail lengkap + troubleshooting: [`standalone/README.md`](./standalone/README.md).
+
+#### Instalasi dashboard TERPISAH dari core (dari source)
 
 Kalau gowa-core sudah/mau di-install & di-update sendiri (server lain, versi lain, atau memang cuma mau kelola dashboard-nya), pakai [`docker-compose.dashboard-only.yml`](./docker-compose.dashboard-only.yml) — file ini **tidak punya service core sama sekali**, jadi update/rebuild core tidak pernah menyentuh container dashboard:
 

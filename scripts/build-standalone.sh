@@ -39,14 +39,25 @@ for pair in "amd64" "arm64"; do
         -o "${STAGE}/bin/whatsapp-dashboard-linux-${pair}" .
 done
 
+# Segarkan juga binary yang di-commit di standalone/bin/ + SHA256SUMS,
+# karena itulah yang diambil bootstrap.sh dari GitHub. Kalau tidak
+# disinkronkan, one-liner install akan memasang binary versi lama.
+cd "$ROOT"
+mkdir -p standalone/bin
+cp "${STAGE}/bin/whatsapp-dashboard-linux-amd64" standalone/bin/
+cp "${STAGE}/bin/whatsapp-dashboard-linux-arm64" standalone/bin/
+( cd standalone && sha256sum bin/whatsapp-dashboard-linux-amd64 \
+                             bin/whatsapp-dashboard-linux-arm64 > SHA256SUMS )
+info "standalone/bin/ + SHA256SUMS disegarkan (dipakai bootstrap.sh)"
+
 # ---- aset paket ----
 # CR dibuang saat menyalin. .gitattributes sudah memaksa LF, tapi paket ini
 # bisa juga dibangun dari working tree yang dicopy/di-zip lewat Windows —
 # dan satu CR saja di install.sh membuat Linux menolak dengan
 # "/bin/sh^M: bad interpreter". Pengaman lapis kedua, murah.
 cd "$ROOT"
-for f in install.sh setup-nginx.sh uninstall.sh gowa-dashboard.service \
-         .env.example nginx-aapanel.conf.example \
+for f in install.sh setup-nginx.sh uninstall.sh bootstrap.sh gowa-dashboard.service \
+         .env.example nginx-aapanel.conf.example SHA256SUMS \
          Dockerfile docker-entrypoint.sh docker-compose.yml README.md; do
     tr -d '\r' < "standalone/${f}" > "${STAGE}/${f}"
 done

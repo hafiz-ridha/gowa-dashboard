@@ -33,6 +33,16 @@ go.sum          text eol=lf
 # Dokumentasi.
 *.md            text eol=lf
 
+# Binary Linux yang di-commit untuk bootstrap.sh — WAJIB ditandai binary.
+# Tanpa ini, core.autocrlf=true akan mengganti setiap byte 0x0A di dalam ELF
+# menjadi 0x0D0A saat checkout dan binary-nya RUSAK ("cannot execute binary
+# file" / segfault). Ini bukan hipotesis: repo ini punya autocrlf=true.
+standalone/bin/*            binary
+whatsapp-dashboard-linux-*  binary
+
+# Daftar checksum harus LF supaya `sha256sum -c` cocok di Linux.
+SHA256SUMS      text eol=lf
+
 # Binary — jangan pernah diubah Git.
 *.png           binary
 *.jpg           binary

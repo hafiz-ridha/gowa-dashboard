@@ -23,3 +23,9 @@ src/gowa
 
 # Output paket standalone (dibangun oleh scripts/build-standalone.sh)
 /dist/
+
+# Kecualikan binary rilis standalone dari aturan `bin` di atas — file ini
+# SENGAJA di-commit supaya standalone/bootstrap.sh bisa mengambilnya langsung
+# dari GitHub tanpa perlu build di server tujuan.
+!standalone/bin/
+!standalone/bin/whatsapp-dashboard-linux-*
