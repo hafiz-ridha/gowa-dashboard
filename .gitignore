@@ -20,3 +20,6 @@ bin
 src/whatsapp
 .worktrees/
 src/gowa
+
+# Output paket standalone (dibangun oleh scripts/build-standalone.sh)
+/dist/

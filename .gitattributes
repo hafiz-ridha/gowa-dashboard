@@ -1,0 +1,46 @@
+# Paksa LF untuk semua file yang dieksekusi di Linux.
+#
+# KENAPA PENTING: repo ini di-develop di Windows dengan core.autocrlf=true.
+# Tanpa aturan di bawah, shell script ter-checkout dengan CRLF, dan saat
+# dijalankan di server Linux hasilnya error yang membingungkan:
+#
+#     /bin/sh: install.sh: /bin/sh^M: bad interpreter
+#     $'\r': command not found
+#
+# Aturan ini mengunci LF di working tree apa pun OS-nya, sehingga paket
+# standalone yang dibuat scripts/build-standalone.sh selalu bisa dijalankan.
+
+*.sh            text eol=lf
+*.service       text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+.env.example    text eol=lf
+*.conf.example  text eol=lf
+entrypoint.sh   text eol=lf
+
+# Go source & templating: LF juga, konsisten dengan gofmt.
+*.go            text eol=lf
+go.mod          text eol=lf
+go.sum          text eol=lf
+
+# Aset web yang di-embed ke binary.
+*.html          text eol=lf
+*.css           text eol=lf
+*.js            text eol=lf
+
+# Dokumentasi.
+*.md            text eol=lf
+
+# Binary — jangan pernah diubah Git.
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.pdf           binary
+*.xlsx          binary
+*.tar.gz        binary
+*.zip           binary
+*.db            binary

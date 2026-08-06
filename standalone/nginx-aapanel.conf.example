@@ -1,0 +1,83 @@
+# =====================================================================
+# Blok reverse proxy nginx untuk GoWA Dashboard standalone (aaPanel)
+# =====================================================================
+#
+# BIASANYA TIDAK PERLU DIPAKAI MANUAL — `install.sh DOMAIN` atau
+# `setup-nginx.sh DOMAIN` sudah menuliskannya otomatis + validasi + rollback.
+#
+# File ini untuk kondisi Anda ingin menempel manual lewat aaPanel UI:
+#   1. aaPanel -> Website -> klik domain -> tab "Config file"
+#   2. Kalau ada blok `location /` atau `location ^~ /` yang berisi
+#      proxy_pass: GANTI seluruh blok itu dengan blok di bawah.
+#      Kalau belum ada: TEMPEL blok di bawah di dalam `server { ... }`,
+#      tepat sebelum kurung tutup terakhir.
+#   3. Save -> Reload Nginx
+#   4. Uji (WAJIB pakai POST, bukan cuma GET):
+#        curl -i -X POST -H 'Content-Type: application/json' -d '{}' \
+#             https://DOMAIN-ANDA/api/_cleanup
+#      Harus 200/400/401 — JANGAN 404.
+#
+# JANGAN ubah blok SSL / .well-known / blok lain yang aaPanel generate.
+#
+# ---------------------------------------------------------------------
+# Kenapa blok bawaan aaPanel gagal — dua bug di UI "Add Reverse Proxy":
+#
+#   1. proxy_pass http://127.0.0.1:18088/;
+#                                       ^ trailing slash
+#      nginx me-rewrite URI jadi kosong. POST /api/devices sampai ke
+#      Fiber sebagai path kosong -> balasan "Cannot POST ".
+#
+#   2. proxy_set_header Host http://127.0.0.1:18088;
+#      Host diisi URL upstream. RFC 7230 §5.4: Host = host[:port] tanpa
+#      skema. fasthttp salah parse -> routing miss -> 404.
+#
+#   Satu saja dari dua bug itu cukup membuat dashboard tidak jalan.
+#   Gejala khas: halaman terbuka tapi "Tambah Device" 404, atau browser
+#   error "Cannot use import statement outside a module" (karena proxy
+#   nyasar ke core yang menyajikan ES module Vue).
+#
+# Catatan: blok ini SENGAJA tidak memakai $connection_upgrade — dashboard
+# tidak memakai WebSocket sama sekali, dan variabel itu belum tentu
+# terdefinisi di setiap server (kalau tidak ada, `nginx -t` langsung gagal).
+# ---------------------------------------------------------------------
+
+# WAJIB IKUT DITEMPEL, dan harus SEBELUM blok "location ^~ /" di bawah.
+#
+# 'location ^~ /' membuat nginx BERHENTI mengevaluasi seluruh location regex,
+# termasuk blok .well-known bawaan aaPanel. Tanpa pengecualian ini, validasi
+# ACME ikut ter-proxy ke dashboard dan perpanjangan otomatis sertifikat
+# Let's Encrypt GAGAL — gejalanya baru terasa 60-90 hari kemudian saat
+# sertifikat kedaluwarsa dan situs mendadak tidak bisa diakses.
+#
+# Prefix ini lebih panjang daripada '/', jadi ia menang dan file challenge
+# dilayani langsung dari disk.
+location ^~ /.well-known/acme-challenge/
+{
+    allow all;
+    try_files $uri =404;
+}
+
+location ^~ /
+{
+    # TANPA trailing slash. Ini kuncinya.
+    proxy_pass http://127.0.0.1:18088;
+
+    proxy_http_version 1.1;
+
+    # Host WAJIB $host (hostname dari klien), BUKAN URL upstream.
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # Upload dokumen knowledgebase AI Reply (default core 10 MB).
+    client_max_body_size 50m;
+
+    # Login QR menunggu pairing sampai beberapa menit — jangan diputus.
+    proxy_read_timeout    300s;
+    proxy_send_timeout    300s;
+    proxy_connect_timeout 30s;
+
+    # QR PNG dan response panjang langsung diteruskan tanpa ditahan.
+    proxy_buffering off;
+}

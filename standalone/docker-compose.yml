@@ -1,0 +1,37 @@
+# GoWA Dashboard standalone — jalur Docker.
+#
+# TIDAK ada service gowa-core di sini. Dashboard ini berdiri sendiri dan
+# menghubungi core lewat HTTP, jadi update/rebuild core tidak pernah
+# menyentuh container ini.
+#
+# Pakai:
+#   docker compose up -d --build
+#
+# Port di-bind ke 127.0.0.1 supaya tidak terbuka ke internet secara
+# langsung — akses publik lewat reverse proxy nginx aaPanel
+# (lihat nginx-aapanel.conf.example).
+#
+# Setelah jalan, buka dashboard -> tab "Pengaturan" untuk mengisi
+# URL + credential gowa-core. Tidak perlu mengubah file ini.
+
+services:
+  dashboard:
+    build:
+      context: .
+    image: gowa-dashboard:standalone
+    container_name: gowa-dashboard
+    restart: unless-stopped
+    ports:
+      # host_ip:host_port:container_port
+      - "127.0.0.1:18088:8088"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      # Database SQLite persisten (jadwal, broadcast, log, setting core).
+      - ./data:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "10"

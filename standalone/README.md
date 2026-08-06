@@ -1,0 +1,256 @@
+# GoWA Dashboard — Paket Standalone untuk aaPanel
+
+Paket ini **berdiri sendiri sepenuhnya**. Tidak butuh gowa-core di server yang
+sama, tidak butuh Go, tidak butuh Node.js, tidak butuh Composer. Isinya binary
+Linux statis yang jalan di distro apa pun (Debian, Ubuntu, CentOS, Alma, Rocky,
+Alpine) tanpa dependensi library.
+
+Update gowa-core **tidak akan pernah** mengganggu dashboard ini — keduanya
+terpisah total dan hanya berbicara lewat HTTP.
+
+---
+
+## Isi paket
+
+```
+standalone/
+├── bin/
+│   ├── whatsapp-dashboard-linux-amd64    # Intel/AMD 64-bit (paling umum)
+│   └── whatsapp-dashboard-linux-arm64    # ARM 64-bit (Ampere, Graviton, dll)
+├── install.sh                # installer utama (systemd + nginx + verifikasi)
+├── setup-nginx.sh            # khusus set reverse proxy nginx aaPanel
+├── uninstall.sh              # hapus (database bisa dipertahankan)
+├── gowa-dashboard.service    # template unit systemd
+├── .env.example              # template konfigurasi
+├── nginx-aapanel.conf.example# blok nginx untuk ditempel manual (kalau perlu)
+├── Dockerfile                # jalur Docker (alternatif)
+├── docker-compose.yml        # jalur Docker (alternatif)
+└── README.md                 # file ini
+```
+
+---
+
+## Cara A — Install langsung (disarankan)
+
+Paling sederhana: tanpa Docker, jalan sebagai service systemd.
+
+### 1. Buat site di aaPanel
+
+aaPanel → **Website** → **Add site**
+
+- Domain: `gowa.domainku.com` (ganti sesuai milik Anda)
+- PHP version: **Pure static**
+- Sisanya biarkan default
+
+> Kalau ingin HTTPS: setelah site dibuat, buka tab **SSL** → **Let's Encrypt** →
+> Apply. Lakukan ini **sebelum** langkah 3 supaya uji otomatis di akhir
+> installer bisa lolos.
+
+### 2. Upload & ekstrak paket
+
+Upload `gowa-dashboard-standalone.tar.gz` lewat aaPanel **Files**, misal ke
+`/root`. Lalu buka **Terminal** di aaPanel:
+
+```bash
+cd /root
+tar -xzf gowa-dashboard-standalone.tar.gz
+cd standalone
+```
+
+### 3. Jalankan installer
+
+```bash
+sudo sh install.sh gowa.domainku.com
+```
+
+Installer akan:
+
+1. Memeriksa arsitektur CPU dan memilih binary yang tepat
+2. Memastikan port 18088 belum dipakai proses lain
+3. Membuat user sistem `gowadash` (tanpa login, non-root)
+4. Memasang binary ke `/opt/gowa-dashboard`
+5. Membuat `.env` (**tidak menimpa** kalau sudah ada)
+6. Memasang + menyalakan service systemd (auto-start saat reboot)
+7. Menunggu sampai dashboard benar-benar menjawab HTTP
+8. Menulis config nginx yang benar, `nginx -t`, lalu reload
+9. Menguji lewat URL publik — **termasuk POST**, karena dua bug aaPanel
+   di bawah hanya muncul pada POST
+
+Kalau ada tahap yang gagal, installer berhenti dengan pesan spesifik dan
+config nginx dikembalikan ke kondisi semula (ada backup `.bak.*`).
+
+Tanpa argumen domain juga boleh — nginx dilewati, dashboard tetap jalan di
+`127.0.0.1:18088`:
+
+```bash
+sudo sh install.sh
+```
+
+### 4. Hubungkan ke gowa-core
+
+Buka `https://gowa.domainku.com` → tab **Pengaturan** → isi:
+
+- **Core URL** — misal `http://127.0.0.1:3000` (core di server yang sama)
+  atau `https://api.domainku.com` (core di server lain)
+- **Username / Password** — hanya kalau core memakai `APP_BASIC_AUTH`
+
+Klik **Simpan**. Badge di kanan atas berubah menjadi hijau
+**"API Core Connected"**. Tidak perlu edit file atau restart apa pun —
+perubahan langsung berlaku.
+
+---
+
+## Cara B — Install via Docker (alternatif)
+
+Kalau Anda lebih suka container (aaPanel → Docker sudah terpasang):
+
+```bash
+cd standalone
+docker compose up -d --build
+```
+
+Build-nya cepat karena binary sudah ada — tidak ada kompilasi Go.
+Container bind ke `127.0.0.1:18088`, jadi tetap perlu reverse proxy:
+
+```bash
+sudo sh setup-nginx.sh gowa.domainku.com
+```
+
+---
+
+## Amankan dashboard (sangat disarankan)
+
+Kalau dashboard bisa diakses dari internet, pasang basic auth:
+
+```bash
+sudo nano /opt/gowa-dashboard/.env
+```
+
+Ubah baris ini:
+
+```
+DASHBOARD_BASIC_AUTH=admin:passwordKuatAnda
+```
+
+Lalu:
+
+```bash
+sudo systemctl restart gowa-dashboard
+```
+
+---
+
+## Perintah harian
+
+```bash
+systemctl status gowa-dashboard      # status
+systemctl restart gowa-dashboard     # restart
+systemctl stop gowa-dashboard        # stop
+journalctl -u gowa-dashboard -f      # lihat log berjalan
+```
+
+Upgrade ke versi baru: ekstrak paket baru, lalu jalankan `sudo sh install.sh`
+lagi. Binary diganti; `.env` dan database **tidak** disentuh.
+
+Hapus:
+
+```bash
+sudo sh uninstall.sh            # hapus service+binary, data dipertahankan
+sudo sh uninstall.sh --purge    # hapus semuanya termasuk database
+```
+
+---
+
+## Kalau ada masalah
+
+### Halaman terbuka, tapi "Tambah Device" gagal / 404
+
+Ini **bug config nginx aaPanel**, bukan bug dashboard. Uji:
+
+```bash
+curl -i -X POST -H 'Content-Type: application/json' -d '{}' \
+     https://gowa.domainku.com/api/_cleanup
+```
+
+- Dapat **200 / 400 / 401** → routing benar, masalahnya di tempat lain
+- Dapat **404** → config nginx masih salah, jalankan:
+
+```bash
+sudo sh setup-nginx.sh gowa.domainku.com
+```
+
+Penyebabnya salah satu dari dua bug UI "Add Reverse Proxy" aaPanel:
+
+| Bug | Config salah dari aaPanel | Yang benar |
+|-----|---------------------------|------------|
+| 1 | `proxy_pass http://127.0.0.1:18088/;` (ada `/` di akhir) | `proxy_pass http://127.0.0.1:18088;` |
+| 2 | `proxy_set_header Host http://127.0.0.1:18088;` | `proxy_set_header Host $host;` |
+
+Bug 1: trailing slash membuat nginx me-rewrite URI jadi kosong, sehingga
+`POST /api/devices` sampai ke server sebagai path kosong.
+Bug 2: `Host` diisi URL upstream padahal harus hostname klien — RFC 7230 §5.4.
+Satu saja dari keduanya sudah cukup membuat dashboard tidak berfungsi.
+
+> **Kenapa harus diuji dengan POST?** GET sering tetap jalan meski config
+> salah, jadi bug ini lolos kalau hanya membuka halaman di browser.
+
+### Browser: "Cannot use import statement outside a module"
+
+Reverse proxy nyasar ke **gowa-core** (yang menyajikan ES module Vue), bukan ke
+dashboard. Pastikan `proxy_pass` menunjuk port dashboard (`18088`), bukan port
+core (`3000`). Jalankan `sudo sh setup-nginx.sh DOMAIN` untuk memperbaiki.
+
+### Service tidak mau start
+
+```bash
+journalctl -u gowa-dashboard -n 50 --no-pager
+```
+
+Penyebab yang paling sering:
+
+| Pesan log | Sebab & solusi |
+|-----------|----------------|
+| `address already in use` | Port 18088 dipakai proses lain. Cek: `ss -ltnp \| grep 18088`. Hentikan proses itu atau ubah `DASHBOARD_PORT` di `.env` **dan** port di config nginx. |
+| `unable to open database file` | Folder data bermasalah. Perbaiki: `sudo chown -R gowadash:gowadash /opt/gowa-dashboard` |
+| `permission denied` | Sama seperti di atas. |
+
+### Badge "API Core Disconnected" (merah)
+
+Dashboard sehat, tapi tidak bisa menghubungi core. Periksa:
+
+1. Core benar-benar jalan: `curl -i http://127.0.0.1:3000/app/devices`
+2. Core URL di tab **Pengaturan** sudah benar (termasuk `http://` atau `https://`)
+3. Kalau core pakai basic auth, username/password sudah diisi
+4. Kalau core di server lain: firewall mengizinkan koneksi dari server ini
+5. Arahkan mouse ke badge — tooltip menampilkan pesan error persisnya
+
+### Ingin mengembalikan config nginx
+
+Setiap perubahan membuat backup:
+
+```bash
+ls /www/server/panel/vhost/nginx/*.bak.*
+sudo cp /www/server/panel/vhost/nginx/DOMAIN.conf.bak.YYYYMMDD-HHMMSS \
+        /www/server/panel/vhost/nginx/DOMAIN.conf
+sudo nginx -t && sudo nginx -s reload
+```
+
+---
+
+## Catatan teknis
+
+- **Port**: dashboard `18088` (loopback), core `3000`. Angka berbeda supaya
+  tidak bentrok dan mudah dibedakan saat debug.
+- **Database**: SQLite di `/opt/gowa-dashboard/data/dashboard.db`
+  (pure-Go, tanpa CGO). Isinya jadwal, broadcast, log eksekusi, dan setting
+  koneksi core. Backup = cukup salin file ini (sertakan `-wal` dan `-shm`
+  kalau ada, atau stop service dulu supaya konsisten).
+- **Password core** disimpan apa adanya di `dashboard.db` (sama seperti seluruh
+  isi database itu yang juga tidak terenkripsi) dan **selalu di-mask** di
+  respons API maupun UI. Amankan file DB-nya lewat permission — sudah diatur
+  agar hanya `gowadash` yang bisa membacanya.
+- **Service hardening**: systemd unit memakai `ProtectSystem=strict`,
+  `NoNewPrivileges`, `PrivateTmp`, dan hanya `data/` yang writable.
+- **Konfigurasi core**: nilai `WHATSAPP_API_*` di `.env` hanya dipakai sebagai
+  nilai awal saat boot pertama. Setelah disimpan lewat tab **Pengaturan**,
+  nilai di database yang menang.

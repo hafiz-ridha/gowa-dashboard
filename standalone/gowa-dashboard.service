@@ -1,0 +1,47 @@
+[Unit]
+Description=GoWA Dashboard (standalone) — UI penjadwalan & broadcast WhatsApp
+Documentation=https://github.com/hafiz-ridha/gowa-dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@APP_USER@
+Group=@APP_USER@
+WorkingDirectory=@APP_DIR@
+# Binary membaca .env dari working directory (godotenv), jadi cukup WorkingDirectory.
+# EnvironmentFile dipakai juga supaya `systemctl show` menampilkan nilainya dan
+# supaya konfigurasi tetap terbaca kalau nanti binary dipindah.
+EnvironmentFile=-@APP_DIR@/.env
+ExecStart=@APP_DIR@/whatsapp-dashboard
+
+Restart=always
+RestartSec=5s
+
+# Jangan spam restart kalau memang crash-loop karena config salah —
+# biar log-nya kebaca, bukan tertimbun ribuan percobaan.
+StartLimitInterval=60s
+StartLimitBurst=5
+
+# ---- Hardening ----
+# Dashboard hanya butuh: baca binary-nya sendiri + tulis data/ (SQLite + WAL).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@APP_DIR@/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+# Butuh AF_INET (HTTP server + client ke core). AF_UNIX untuk logging journald.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gowa-dashboard
+
+[Install]
+WantedBy=multi-user.target
