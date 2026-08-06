@@ -24,9 +24,12 @@ services:
     ports:
       # host_ip:host_port:container_port
       - "127.0.0.1:18088:8088"
+    # Bentuk sederhana (string), BUKAN bentuk panjang `- path: .env`.
+    # Bentuk panjang baru didukung Docker Compose >= 2.24; di aaPanel sering
+    # terpasang versi lebih lama (atau docker-compose v1) yang langsung
+    # menolak dengan "env_file[0] must be a string".
     env_file:
-      - path: .env
-        required: false
+      - .env
     volumes:
       # Database SQLite persisten (jadwal, broadcast, log, setting core).
       - ./data:/data

@@ -19,6 +19,8 @@ standalone/
 │   └── whatsapp-dashboard-linux-arm64    # ARM 64-bit (Ampere, Graviton, dll)
 ├── bootstrap.sh              # installer satu perintah, ambil dari GitHub
 ├── install.sh                # installer utama (systemd + nginx + verifikasi)
+├── set-password.sh           # lihat/ganti login dashboard (systemd & Docker)
+├── lib-common.sh             # fungsi bersama (auth, .env) — di-source, bukan dijalankan
 ├── setup-nginx.sh            # khusus set reverse proxy nginx aaPanel
 ├── uninstall.sh              # hapus (database bisa dipertahankan)
 ├── gowa-dashboard.service    # template unit systemd
@@ -271,19 +273,61 @@ Hanya kalau dashboard benar-benar tidak bisa dijangkau dari internet:
 ... | sudo GOWA_BASIC_AUTH=none sh -s -- gowa.domainku.com
 ```
 
-### Mengganti login setelah terpasang
+### Lupa password / tidak bisa login / ingin ganti
+
+Pakai `set-password.sh`. Otomatis mendeteksi instalasi systemd maupun Docker,
+mengubah `.env` yang tepat, me-restart layanan yang tepat, lalu memverifikasi
+login benar-benar aktif:
 
 ```bash
-sudo nano /opt/gowa-dashboard/.env      # ubah baris DASHBOARD_BASIC_AUTH
+sudo sh set-password.sh --show     # lihat username & password yang berlaku
+sudo sh set-password.sh            # ganti (tanya interaktif)
+sudo sh set-password.sh --disable  # matikan login (TIDAK disarankan)
+```
+
+Non-interaktif:
+
+```bash
+sudo GOWA_BASIC_AUTH='admin:PasswordBaru' sh set-password.sh
+```
+
+Kalau tidak punya folder paketnya lagi, ambil ulang:
+
+```bash
+curl -fsSL -O https://raw.githubusercontent.com/hafiz-ridha/gowa-dashboard/main/standalone/set-password.sh
+curl -fsSL -O https://raw.githubusercontent.com/hafiz-ridha/gowa-dashboard/main/standalone/lib-common.sh
+sudo sh set-password.sh --show
+```
+
+Atau manual, tanpa skrip:
+
+```bash
+sudo grep DASHBOARD_BASIC_AUTH /opt/gowa-dashboard/.env   # lihat
+sudo nano /opt/gowa-dashboard/.env                        # ubah
 sudo systemctl restart gowa-dashboard
 ```
 
-Install ulang / upgrade **tidak** mengubah login yang sudah ada — `.env` tidak
-pernah ditimpa.
+Install ulang / upgrade **tidak** mengubah login yang sudah valid — `.env`
+tidak pernah ditimpa. Tapi kalau login-nya kosong atau formatnya rusak,
+installer akan memperbaikinya (lihat peringatan di bawah).
 
 > Verifikasi cepat: `curl -i https://gowa.domainku.com/api/_health` harus
 > menjawab **401** kalau login aktif. Kalau menjawab 200 tanpa kredensial,
 > berarti login belum aktif.
+
+### Penting: nilai tanpa `:` membuat dashboard TERBUKA
+
+Dashboard hanya memasang proteksi kalau `DASHBOARD_BASIC_AUTH` memuat `:`
+(`user:password`). Nilai seperti `DASHBOARD_BASIC_AUTH=passwordku` **diabaikan
+sepenuhnya** — dashboard jalan tanpa login, tanpa pesan error. Pemiliknya
+yakin sudah terproteksi padahal tidak.
+
+Installer dan `set-password.sh` sekarang menolak format itu dan
+memperbaikinya. Cek instalasi lama Anda:
+
+```bash
+sudo sh set-password.sh --show
+```
 
 ---
 

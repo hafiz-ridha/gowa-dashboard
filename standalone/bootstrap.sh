@@ -262,10 +262,33 @@ atau:                   apt-get install -y docker-compose-plugin"
         . ./lib-common.sh
 
         # Siapkan .env untuk container (compose membacanya lewat env_file).
+        #
+        # Kalau .env sudah ada TAPI login-nya kosong/rusak, jangan dilewati
+        # diam-diam: dulu skrip ini hanya bilang "dipakai apa adanya" sehingga
+        # user tidak pernah ditanya password DAN tidak tahu login apa yang
+        # berlaku — persis penyebab "tidak bisa login" pada install ulang.
         if [ -f .env ]; then
-            info ".env sudah ada di ${DOCKER_DIR} — dipakai apa adanya."
-            info "Login dashboard tetap seperti sebelumnya."
-            AUTH_GENERATED=0; AUTH_DISABLED=0; AUTH_USER=""
+            _cur="$(grep '^DASHBOARD_BASIC_AUTH=' .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
+            case "$_cur" in
+                *:*)
+                    info ".env sudah ada — login dipertahankan (user: ${_cur%%:*})."
+                    info "Ganti login: sudo sh set-password.sh"
+                    AUTH_GENERATED=0; AUTH_DISABLED=0; AUTH_USER="${_cur%%:*}"
+                    ;;
+                "")
+                    yellow ".env sudah ada tapi login BELUM diatur (dashboard terbuka)."
+                    info "Mengatur login sekarang..."
+                    resolve_basic_auth
+                    apply_basic_auth .env
+                    ;;
+                *)
+                    red ".env sudah ada tapi nilai login '${_cur}' TIDAK VALID (tanpa ':')."
+                    red "Nilai seperti itu diabaikan dashboard, jadi jalan TANPA proteksi."
+                    info "Memperbaiki sekarang..."
+                    resolve_basic_auth
+                    apply_basic_auth .env
+                    ;;
+            esac
         else
             cp .env.example .env
             # Di dalam container, bind ke semua interface: isolasi dilakukan

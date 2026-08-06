@@ -120,10 +120,31 @@ AUTH_PASS=""
 AUTH_DISABLED=0
 
 if [ -f "${APP_DIR}/.env" ]; then
-    yellow "SKIP: ${APP_DIR}/.env sudah ada — tidak ditimpa (konfigurasi Anda aman)."
-    info "Login dashboard tetap seperti sebelumnya."
-    info "Ganti kapan saja: ubah DASHBOARD_BASIC_AUTH di ${APP_DIR}/.env lalu"
-    info "  systemctl restart ${APP_NAME}"
+    yellow "SKIP: ${APP_DIR}/.env sudah ada — setting Anda tidak ditimpa."
+    # Tapi JANGAN diam kalau login-nya kosong/rusak. Instalasi yang dibuat
+    # sebelum fitur ini ada punya DASHBOARD_BASIC_AUTH kosong = terbuka;
+    # kalau hanya di-skip, user tidak pernah tahu.
+    _cur="$(grep '^DASHBOARD_BASIC_AUTH=' "${APP_DIR}/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    case "$_cur" in
+        *:*)
+            info "Login dashboard dipertahankan (user: ${_cur%%:*})."
+            info "Ganti login: sudo sh ${SRC_DIR}/set-password.sh"
+            AUTH_USER="${_cur%%:*}"
+            ;;
+        "")
+            yellow "Login dashboard BELUM diatur — dashboard ini TERBUKA."
+            info "Mengatur login sekarang..."
+            resolve_basic_auth
+            apply_basic_auth "${APP_DIR}/.env"
+            ;;
+        *)
+            red "Nilai login '${_cur}' TIDAK VALID (tidak ada tanda ':')."
+            red "Dashboard mengabaikan format itu dan jalan TANPA proteksi."
+            info "Memperbaiki sekarang..."
+            resolve_basic_auth
+            apply_basic_auth "${APP_DIR}/.env"
+            ;;
+    esac
 else
     cp "${SRC_DIR}/.env.example" "${APP_DIR}/.env"
     # Paksa bind ke loopback: dashboard diakses lewat nginx, tidak langsung.
