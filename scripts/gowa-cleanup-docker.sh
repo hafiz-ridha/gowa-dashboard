@@ -15,21 +15,31 @@
 # PAKAI:
 #   sh gowa-cleanup-docker.sh --dry-run              # lihat saja (SELALU mulai dari sini)
 #   sh gowa-cleanup-docker.sh                        # bersihkan, retensi 30 hari
+#   sh gowa-cleanup-docker.sh --all                  # SEMUA container gowa sekaligus
+#   sh gowa-cleanup-docker.sh --list                 # daftar container gowa terdeteksi
+#   sh gowa-cleanup-docker.sh --container gowa-core  # satu container tertentu
 #   sh gowa-cleanup-docker.sh --media-days 14
-#   sh gowa-cleanup-docker.sh --container gowa-core  # tentukan container manual
 #   sh gowa-cleanup-docker.sh --install-cron         # jadwal mingguan
 #   sh gowa-cleanup-docker.sh --uninstall-cron
+#
+# BANYAK CONTAINER GOWA DI SATU SERVER:
+#   Didukung penuh. `--all` memproses semuanya satu per satu, masing-masing
+#   dengan mount & log-nya sendiri. Tanpa --all dan tanpa --container, kalau
+#   terdeteksi lebih dari satu:
+#     - ada terminal   -> ditampilkan daftar, Anda memilih
+#     - tanpa terminal -> BERHENTI dan minta --all atau --container
+#   Sengaja tidak menebak, supaya container yang salah tidak tersentuh.
+#   Kegagalan pada satu container tidak menghentikan yang lain; ringkasan
+#   di akhir menyebut berapa yang berhasil dan berapa yang gagal.
 #
 # ---------------------------------------------------------------------
 # PENGAMAN (penting di aaPanel yang menjalankan banyak aplikasi):
 #
-#   * HANYA menyentuh container gowa yang teridentifikasi. Kalau ada lebih
-#     dari satu kandidat, skrip BERHENTI dan meminta --container, bukan
-#     menebak.
 #   * Path kerja diambil dari `docker inspect` container itu sendiri, lalu
 #     diperiksa terhadap denylist (/, /etc, /var, /root, /www, dst) dan
-#     wajib berisi statics/ atau storages/. Tanpa itu, skrip menolak jalan.
-#   * File .db TIDAK PERNAH dihapus — hanya file media/qr/senditems.
+#     wajib absolut + minimal 2 segmen + folder nyata. Gagal salah satu,
+#     skrip menolak menyentuh apa pun.
+#   * File .db TIDAK PERNAH dihapus — hanya media/qr/senditems.
 #   * TIDAK menjalankan `docker system prune -a` maupun `--volumes`.
 #     Perintah itu menghapus image & volume milik SELURUH server, termasuk
 #     aplikasi aaPanel lain. Yang tersedia hanya `--prune-dangling`
@@ -47,6 +57,8 @@ DRY_RUN=0
 DO_VACUUM=1
 DO_LOGS=1
 PRUNE_DANGLING=0
+ALL=0
+LIST_ONLY=0
 CONTAINER="${GOWA_CONTAINER:-}"
 ACTION=""
 CRON_FILE="/etc/cron.d/gowa-cleanup-docker"
@@ -63,6 +75,8 @@ fail()  { red "GAGAL: $*"; exit 1; }
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run)         DRY_RUN=1 ;;
+        --all)             ALL=1 ;;
+        --list)            LIST_ONLY=1 ;;
         --no-vacuum)       DO_VACUUM=0 ;;
         --no-logs)         DO_LOGS=0 ;;
         --prune-dangling)  PRUNE_DANGLING=1 ;;
@@ -71,7 +85,7 @@ while [ $# -gt 0 ]; do
         --container)       shift; CONTAINER="${1:?butuh nama container}" ;;
         --install-cron)    ACTION=install ;;
         --uninstall-cron)  ACTION=uninstall ;;
-        -h|--help)         sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)         sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) fail "argumen tidak dikenal: $1  (pakai --help)" ;;
     esac
     shift
@@ -87,67 +101,136 @@ docker info >/dev/null 2>&1 || fail "tidak bisa bicara dengan Docker daemon.
 Jalankan sebagai root (sudo) atau pastikan Docker berjalan."
 
 # ---------- deteksi container gowa ----------
-# Tidak menebak: kalau ambigu, berhenti dan minta --container.
-detect_container() {
-    _found=""
-    # 1) nama persis yang lazim dipakai
+# Mengembalikan daftar (satu nama per baris). Pencocokan memakai IMAGE, bukan
+# sekadar nama, supaya container lain yang kebetulan bernama mirip tidak ikut.
+detect_containers() {
+    _f=""
     for n in gowa-core whatsapp_go gowa_whatsapp_go_1 gowa-whatsapp_go-1; do
         if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$n"; then
-            _found="${_found}${n}
+            _f="${_f}${n}
 "
         fi
     done
-    # 2) kalau belum ketemu, cocokkan dari IMAGE (bukan sekadar nama, supaya
-    #    container lain yang kebetulan bernama mirip tidak ikut terjaring)
-    if [ -z "$_found" ]; then
-        _found="$(docker ps -a --format '{{.Names}}\t{{.Image}}' 2>/dev/null \
-                  | grep -iE 'go-whatsapp-web-multidevice|gowa' \
-                  | grep -viE 'dashboard' \
-                  | awk '{print $1}')"
-    fi
-    printf '%s' "$_found" | grep -v '^$' || true
+    _byimg="$(docker ps -a --format '{{.Names}}\t{{.Image}}' 2>/dev/null \
+              | grep -iE 'go-whatsapp-web-multidevice|gowa' \
+              | grep -viE 'dashboard' \
+              | awk '{print $1}')"
+    _f="${_f}${_byimg}"
+    # Dedupe sambil mempertahankan urutan.
+    printf '%s\n' "$_f" | grep -v '^$' | awk '!seen[$0]++' || true
 }
 
-if [ -z "$CONTAINER" ]; then
-    CANDIDATES="$(detect_container)"
-    _n="$(printf '%s\n' "$CANDIDATES" | grep -c . || true)"
-    if [ "${_n:-0}" -eq 0 ]; then
-        fail "container gowa-core tidak ditemukan.
-Lihat daftar container:  docker ps -a --format '{{.Names}}\t{{.Image}}'
-Lalu tentukan manual:    sh $0 --container NAMA-CONTAINER"
-    elif [ "${_n:-0}" -gt 1 ]; then
-        red "Ditemukan lebih dari satu kandidat container:"
-        printf '%s\n' "$CANDIDATES" | sed 's/^/    /' >&2
-        fail "ambigu — tentukan manual dengan --container NAMA
-(skrip sengaja tidak menebak supaya tidak menyentuh container yang salah)."
+describe() { # satu baris ringkas tentang container
+    docker ps -a --filter "name=^${1}$" \
+        --format '  {{.Names}}  |  {{.Image}}  |  {{.Status}}' 2>/dev/null || true
+}
+
+# ---------- tentukan daftar container yang akan diproses ----------
+CANDIDATES="$(detect_containers)"
+NCAND="$(printf '%s\n' "$CANDIDATES" | grep -c . || true)"
+NCAND="${NCAND:-0}"
+
+if [ "$LIST_ONLY" -eq 1 ]; then
+    step "Container gowa terdeteksi (${NCAND})"
+    if [ "$NCAND" -eq 0 ]; then
+        echo "  (tidak ada)"
+        echo ""
+        echo "Lihat semua container:  docker ps -a --format '{{.Names}}\t{{.Image}}'"
+    else
+        printf '%s\n' "$CANDIDATES" | while IFS= read -r c; do
+            [ -n "$c" ] && describe "$c"
+        done
+        echo ""
+        echo "Bersihkan semuanya :  sh $0 --all --dry-run"
+        echo "Satu saja          :  sh $0 --container NAMA --dry-run"
     fi
-    CONTAINER="$(printf '%s\n' "$CANDIDATES" | head -1)"
+    exit 0
 fi
 
-docker inspect "$CONTAINER" >/dev/null 2>&1 \
-    || fail "container '$CONTAINER' tidak ada."
+TARGETS=""
+if [ -n "$CONTAINER" ]; then
+    docker inspect "$CONTAINER" >/dev/null 2>&1 || fail "container '$CONTAINER' tidak ada."
+    TARGETS="$CONTAINER"
+elif [ "$ALL" -eq 1 ]; then
+    [ "$NCAND" -gt 0 ] || fail "tidak ada container gowa yang terdeteksi.
+Lihat daftar:  docker ps -a --format '{{.Names}}\t{{.Image}}'"
+    TARGETS="$CANDIDATES"
+elif [ "$NCAND" -eq 0 ]; then
+    fail "container gowa-core tidak ditemukan.
+Lihat daftar:  docker ps -a --format '{{.Names}}\t{{.Image}}'
+Lalu:          sh $0 --container NAMA-CONTAINER"
+elif [ "$NCAND" -eq 1 ]; then
+    TARGETS="$CANDIDATES"
+else
+    # Lebih dari satu. Kalau ada terminal, tawarkan pilihan; kalau tidak,
+    # berhenti — menebak berisiko menyentuh container yang salah.
+    step "Terdeteksi ${NCAND} container gowa"
+    _i=0
+    printf '%s\n' "$CANDIDATES" | while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        describe "$c"
+    done
+    if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        printf "\n" > /dev/tty
+        printf "Pilih: [a]=semua, [nomor]=satu container, [q]=batal\n" > /dev/tty
+        _i=0
+        for c in $CANDIDATES; do
+            [ -n "$c" ] || continue
+            _i=$((_i + 1))
+            printf "  %d) %s\n" "$_i" "$c" > /dev/tty
+        done
+        printf "Pilihan [a]: " > /dev/tty
+        read -r pick < /dev/tty || pick="a"
+        [ -n "$pick" ] || pick="a"
+        case "$pick" in
+            a|A|semua|all) TARGETS="$CANDIDATES" ;;
+            q|Q|batal)     yellow "Dibatalkan."; exit 0 ;;
+            ''|*[!0-9]*)   fail "pilihan tidak valid: '$pick'" ;;
+            *)
+                TARGETS="$(printf '%s\n' "$CANDIDATES" | grep -v '^$' | sed -n "${pick}p")"
+                [ -n "$TARGETS" ] || fail "nomor '$pick' di luar daftar."
+                ;;
+        esac
+    else
+        fail "ada ${NCAND} container gowa dan tidak ada terminal untuk memilih.
+Tentukan salah satu:
+  sh $0 --all                    # proses semuanya
+  sh $0 --container NAMA         # satu container saja
+  sh $0 --list                   # lihat daftarnya dulu"
+    fi
+fi
+
+NTARGET="$(printf '%s\n' "$TARGETS" | grep -c . || true)"
+NTARGET="${NTARGET:-1}"
 
 # ---------- pasang / cabut cron ----------
 if [ "$ACTION" = "install" ]; then
     [ "$(id -u)" -eq 0 ] || fail "pasang cron harus root (pakai sudo)."
     SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
     [ "$SELF" = "$TARGET_BIN" ] || install -m 0755 "$SELF" "$TARGET_BIN"
+    # Kalau target lebih dari satu, cron memakai --all supaya container yang
+    # ditambahkan kemudian ikut terbersihkan tanpa perlu pasang ulang.
+    if [ "$ALL" -eq 1 ] || [ "$NTARGET" -gt 1 ]; then
+        SEL="--all"
+    else
+        SEL="--container $(printf '%s\n' "$TARGETS" | head -1)"
+    fi
     cat > "$CRON_FILE" <<CRON
 # gowa-cleanup-docker — pembersih penyimpanan mingguan (dipasang otomatis)
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 MAILTO=""
-20 3 * * 0 root ${TARGET_BIN} --container ${CONTAINER} --media-days ${MEDIA_DAYS} --temp-days ${TEMP_DAYS} >> /var/log/gowa-cleanup.log 2>&1
+20 3 * * 0 root ${TARGET_BIN} ${SEL} --media-days ${MEDIA_DAYS} --temp-days ${TEMP_DAYS} >> /var/log/gowa-cleanup.log 2>&1
 CRON
     chmod 0644 "$CRON_FILE"
     systemctl reload crond 2>/dev/null || systemctl reload cron 2>/dev/null || true
     green "OK: cron mingguan terpasang -> ${CRON_FILE}"
-    echo "  Jadwal    : setiap Minggu 03:20"
-    echo "  Container : ${CONTAINER}"
-    echo "  Retensi   : media ${MEDIA_DAYS} hari, temp ${TEMP_DAYS} hari"
-    echo "  Log       : /var/log/gowa-cleanup.log"
+    echo "  Jadwal  : setiap Minggu 03:20"
+    echo "  Cakupan : ${SEL}"
+    echo "  Retensi : media ${MEDIA_DAYS} hari, temp ${TEMP_DAYS} hari"
+    echo "  Log     : /var/log/gowa-cleanup.log"
     echo ""
-    echo "Uji dulu tanpa menghapus:  sh ${TARGET_BIN} --dry-run"
+    echo "Uji dulu tanpa menghapus:  sh ${TARGET_BIN} ${SEL} --dry-run"
     exit 0
 fi
 if [ "$ACTION" = "uninstall" ]; then
@@ -158,26 +241,7 @@ if [ "$ACTION" = "uninstall" ]; then
     exit 0
 fi
 
-# ---------- mulai ----------
-printf "\n===== gowa-cleanup-docker  %s =====\n" "$(date '+%Y-%m-%d %H:%M:%S')"
-info "Container : ${CONTAINER}"
-info "Retensi   : media ${MEDIA_DAYS} hari, temp ${TEMP_DAYS} hari"
-[ "$DRY_RUN" -eq 1 ] && yellow "MODE DRY-RUN — tidak ada yang dihapus."
-
-RUNNING="$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo false)"
-info "Status    : $([ "$RUNNING" = "true" ] && echo 'running' || echo 'stopped')"
-
-# ---------- tentukan cara akses file ----------
-# Bind mount  -> file ada di host, dibersihkan langsung (cepat, tak perlu exec)
-# Named volume-> dibersihkan lewat `docker exec` di dalam container
-HOST_STATICS="$(docker inspect -f \
-  '{{range .Mounts}}{{if eq .Destination "/app/statics"}}{{if eq .Type "bind"}}{{.Source}}{{end}}{{end}}{{end}}' \
-  "$CONTAINER" 2>/dev/null || true)"
-HOST_STORAGES="$(docker inspect -f \
-  '{{range .Mounts}}{{if eq .Destination "/app/storages"}}{{if eq .Type "bind"}}{{.Source}}{{end}}{{end}}{{end}}' \
-  "$CONTAINER" 2>/dev/null || true)"
-
-# --- Pengaman path: tolak path berbahaya sebelum menyentuh apa pun ---
+# ---------- pengaman path (dipakai per container) ----------
 safe_path() {
     _p="$1"; _label="$2"
     [ -n "$_p" ] || return 1
@@ -190,48 +254,31 @@ safe_path() {
         /*) : ;;
         *)  red "TOLAK: ${_label} bukan path absolut: '${_p}'"; return 1 ;;
     esac
-    # Kedalaman minimal 2 segmen -> menghindari /tmp, /data, dsb.
     _depth="$(printf '%s' "$_p" | awk -F/ '{c=0; for(i=1;i<=NF;i++) if($i!="") c++; print c}')"
     [ "${_depth:-0}" -ge 2 ] || { red "TOLAK: ${_label} terlalu dangkal: '${_p}'"; return 1; }
     [ -d "$_p" ] || { red "TOLAK: ${_label} bukan folder: '${_p}'"; return 1; }
     return 0
 }
 
-MODE=""
-if [ -n "$HOST_STATICS" ] && safe_path "$HOST_STATICS" "mount statics"; then
-    MODE="host"
-    info "Akses     : bind mount di host -> ${HOST_STATICS}"
-else
-    if [ -n "$HOST_STATICS" ]; then
-        yellow "Bind mount ada tapi tidak lolos pemeriksaan keamanan — beralih ke mode exec."
-    fi
-    [ "$RUNNING" = "true" ] || fail "penyimpanan bukan bind mount, jadi perlu masuk ke container,
-tapi container '${CONTAINER}' sedang berhenti.
-Jalankan dulu:  docker start ${CONTAINER}"
-    MODE="exec"
-    info "Akses     : named volume -> lewat 'docker exec' di dalam container"
-fi
-
-# ---------- helper hitung & hapus ----------
-# Semua operasi DIBATASI ke subfolder statics/* — .db tidak pernah masuk cakupan.
-run_find() { # $1=path, $2=args...
+# ---------- helper per container ----------
+run_find() {
     if [ "$MODE" = "host" ]; then
         _base="$1"; shift
         find "$_base" "$@" 2>/dev/null || true
     else
         _base="$1"; shift
-        docker exec "$CONTAINER" sh -c "find '$_base' $* 2>/dev/null" || true
+        docker exec "$CUR" sh -c "find '$_base' $* 2>/dev/null" || true
     fi
 }
 
-clean_target() { # $1=subdir (media|senditems|qrcode)  $2=hari  $3=label
+clean_target() { # $1=subdir  $2=hari  $3=label
     _sub="$1"; _days="$2"; _label="$3"
     if [ "$MODE" = "host" ]; then
         _path="${HOST_STATICS}/${_sub}"
         [ -d "$_path" ] || { info "${_label}: folder tidak ada, dilewati"; return 0; }
     else
         _path="/app/statics/${_sub}"
-        docker exec "$CONTAINER" test -d "$_path" 2>/dev/null \
+        docker exec "$CUR" test -d "$_path" 2>/dev/null \
             || { info "${_label}: folder tidak ada, dilewati"; return 0; }
     fi
 
@@ -246,7 +293,7 @@ clean_target() { # $1=subdir (media|senditems|qrcode)  $2=hari  $3=label
         _sz="$(find "$_path" -type f -mtime "+${_days}" -printf '%s\n' 2>/dev/null \
                | awk '{s+=$1} END{printf "%.1f MB", s/1048576}')"
     else
-        _sz="$(docker exec "$CONTAINER" sh -c \
+        _sz="$(docker exec "$CUR" sh -c \
                "find '$_path' -type f -mtime +${_days} -exec du -k {} + 2>/dev/null | awk '{s+=\$1} END{printf \"%.1f MB\", s/1024}'" 2>/dev/null || echo "?")"
     fi
     [ -n "$_sz" ] || _sz="?"
@@ -260,15 +307,108 @@ clean_target() { # $1=subdir (media|senditems|qrcode)  $2=hari  $3=label
         find "$_path" -type f -mtime "+${_days}" -delete 2>/dev/null || true
         find "$_path" -mindepth 1 -type d -empty -delete 2>/dev/null || true
     else
-        docker exec "$CONTAINER" sh -c \
+        docker exec "$CUR" sh -c \
             "find '$_path' -type f -mtime +${_days} -delete 2>/dev/null; \
              find '$_path' -mindepth 1 -type d -empty -delete 2>/dev/null" || true
     fi
     green "${_label}: dihapus ${_n} file (${_sz})"
 }
 
-# ---------- kondisi awal ----------
-DISK_REF="${HOST_STATICS:-/var/lib/docker}"
+# process_one CONTAINER — seluruh pekerjaan untuk SATU container.
+# Return 0 = sukses, 1 = gagal (pemanggil lanjut ke container berikutnya).
+process_one() {
+    CUR="$1"
+    printf "\n"
+    printf "\033[1m========================================================\033[0m\n"
+    printf "\033[1m Container: %s\033[0m\n" "$CUR"
+    printf "\033[1m========================================================\033[0m\n"
+    describe "$CUR"
+
+    _running="$(docker inspect -f '{{.State.Running}}' "$CUR" 2>/dev/null || echo false)"
+
+    HOST_STATICS="$(docker inspect -f \
+      '{{range .Mounts}}{{if eq .Destination "/app/statics"}}{{if eq .Type "bind"}}{{.Source}}{{end}}{{end}}{{end}}' \
+      "$CUR" 2>/dev/null || true)"
+    HOST_STORAGES="$(docker inspect -f \
+      '{{range .Mounts}}{{if eq .Destination "/app/storages"}}{{if eq .Type "bind"}}{{.Source}}{{end}}{{end}}{{end}}' \
+      "$CUR" 2>/dev/null || true)"
+
+    MODE=""
+    if [ -n "$HOST_STATICS" ] && safe_path "$HOST_STATICS" "mount statics [$CUR]"; then
+        MODE="host"
+        info "Akses : bind mount -> ${HOST_STATICS}"
+    else
+        [ -z "$HOST_STATICS" ] || yellow "Bind mount tidak lolos pemeriksaan — beralih ke mode exec."
+        if [ "$_running" != "true" ]; then
+            red "[$CUR] penyimpanan bukan bind mount dan container sedang berhenti."
+            echo "      Jalankan dulu:  docker start $CUR"
+            return 1
+        fi
+        MODE="exec"
+        info "Akses : named volume -> lewat 'docker exec'"
+    fi
+
+    step "Pembersihan file [$CUR]"
+    clean_target media     "$MEDIA_DAYS" "media"
+    clean_target senditems "$TEMP_DAYS"  "senditems"
+    clean_target qrcode    "$TEMP_DAYS"  "qrcode"
+
+    # Log json-file bisa membengkak. Di-TRUNCATE, bukan dihapus: menghapus
+    # file yang sedang dibuka Docker membuat log berhenti tercatat.
+    if [ "$DO_LOGS" -eq 1 ]; then
+        step "Log container [$CUR]"
+        _lp="$(docker inspect -f '{{.LogPath}}' "$CUR" 2>/dev/null || true)"
+        if [ -n "$_lp" ] && [ -f "$_lp" ]; then
+            _lsz="$(du -m "$_lp" 2>/dev/null | awk '{print $1}')"
+            if [ "${_lsz:-0}" -ge 10 ] 2>/dev/null; then
+                if [ "$DRY_RUN" -eq 1 ]; then
+                    yellow "  AKAN dikosongkan: ${_lsz} MB"
+                else
+                    : > "$_lp" && green "  Dikosongkan: ${_lsz} MB -> 0 MB"
+                fi
+            else
+                info "  Log kecil (${_lsz:-0} MB) — dibiarkan."
+            fi
+        else
+            info "  LogPath tidak terbaca — dilewati."
+        fi
+    fi
+
+    if [ "$DO_VACUUM" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
+        step "Rapikan database [$CUR]"
+        if [ "$MODE" = "host" ] && [ -n "$HOST_STORAGES" ] && command -v sqlite3 >/dev/null 2>&1; then
+            for db in whatsapp.db chatstorage.db; do
+                f="${HOST_STORAGES}/${db}"
+                [ -f "$f" ] || continue
+                _b="$(du -m "$f" 2>/dev/null | awk '{print $1}')"
+                if sqlite3 "$f" "PRAGMA wal_checkpoint(TRUNCATE); VACUUM;" >/dev/null 2>&1; then
+                    _a="$(du -m "$f" 2>/dev/null | awk '{print $1}')"
+                    green "  ${db}: ${_b}MB -> ${_a}MB"
+                else
+                    yellow "  ${db}: dilewati (terkunci container yang sedang jalan)"
+                fi
+            done
+        else
+            yellow "  Dilewati — butuh sqlite3 di host + bind mount storages."
+        fi
+    fi
+    return 0
+}
+
+# ---------- mulai ----------
+printf "\n===== gowa-cleanup-docker  %s =====\n" "$(date '+%Y-%m-%d %H:%M:%S')"
+info "Target  : ${NTARGET} container"
+info "Retensi : media ${MEDIA_DAYS} hari, temp ${TEMP_DAYS} hari"
+[ "$DRY_RUN" -eq 1 ] && yellow "MODE DRY-RUN — tidak ada yang dihapus."
+
+# Referensi disk: pakai mount container pertama kalau ada, kalau tidak jatuh
+# ke /var/lib/docker.
+FIRST="$(printf '%s\n' "$TARGETS" | grep -v '^$' | head -1)"
+DISK_REF="$(docker inspect -f \
+  '{{range .Mounts}}{{if eq .Destination "/app/statics"}}{{if eq .Type "bind"}}{{.Source}}{{end}}{{end}}{{end}}' \
+  "$FIRST" 2>/dev/null || true)"
+[ -n "$DISK_REF" ] && [ -d "$DISK_REF" ] || DISK_REF="/var/lib/docker"
+
 step "Kondisi awal"
 df -Ph "$DISK_REF" 2>/dev/null | awk 'NR==2{printf "  Disk  : %s dari %s (%s terpakai)\n", $3, $2, $5}'
 df -Pi "$DISK_REF" 2>/dev/null | awk 'NR==2{printf "  Inode : %s dari %s (%s terpakai)\n", $3, $2, $5}'
@@ -283,69 +423,23 @@ if [ -n "$INODE_USE" ] && [ "$INODE_USE" -ge 90 ] 2>/dev/null; then
     yellow "  'database or disk is full' walau kapasitas byte masih longgar."
 fi
 
-if [ "$MODE" = "host" ]; then
-    step "Ukuran sebelum"
-    for d in media senditems qrcode; do
-        [ -d "${HOST_STATICS}/${d}" ] && \
-            du -sh "${HOST_STATICS}/${d}" 2>/dev/null | awk '{printf "  %-14s %s\n", $2, $1}'
-    done
-    [ -n "$HOST_STORAGES" ] && [ -d "$HOST_STORAGES" ] && \
-        du -sh "$HOST_STORAGES" 2>/dev/null | awk '{printf "  %-14s %s\n", $2, $1}'
-fi
-
-# ---------- pembersihan file ----------
-step "Pembersihan file"
-clean_target media     "$MEDIA_DAYS" "media"
-clean_target senditems "$TEMP_DAYS"  "senditems"
-clean_target qrcode    "$TEMP_DAYS"  "qrcode"
-
-# ---------- log container ----------
-# Log json-file bisa membengkak besar. Di-TRUNCATE, bukan dihapus: menghapus
-# file yang sedang dibuka Docker membuat log berhenti tercatat sampai restart.
-if [ "$DO_LOGS" -eq 1 ]; then
-    step "Log container"
-    LOGPATH="$(docker inspect -f '{{.LogPath}}' "$CONTAINER" 2>/dev/null || true)"
-    if [ -n "$LOGPATH" ] && [ -f "$LOGPATH" ]; then
-        LSZ="$(du -m "$LOGPATH" 2>/dev/null | awk '{print $1}')"
-        if [ "${LSZ:-0}" -ge 10 ] 2>/dev/null; then
-            if [ "$DRY_RUN" -eq 1 ]; then
-                yellow "  AKAN dikosongkan: ${LOGPATH} (${LSZ} MB)"
-            else
-                : > "$LOGPATH" && green "  Dikosongkan: ${LSZ} MB -> 0 MB"
-            fi
-        else
-            info "  Log kecil (${LSZ:-0} MB) — dibiarkan."
-        fi
+# ---------- loop semua container ----------
+# Kegagalan satu container TIDAK menghentikan yang lain; hasilnya diringkas
+# di akhir supaya jelas mana yang perlu ditindaklanjuti.
+OK_COUNT=0
+FAIL_COUNT=0
+FAILED_NAMES=""
+for c in $TARGETS; do
+    [ -n "$c" ] || continue
+    if process_one "$c"; then
+        OK_COUNT=$((OK_COUNT + 1))
     else
-        info "  LogPath tidak terbaca — dilewati."
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        FAILED_NAMES="${FAILED_NAMES} ${c}"
     fi
-fi
+done
 
-# ---------- rapikan SQLite ----------
-if [ "$DO_VACUUM" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
-    step "Rapikan database"
-    if [ "$MODE" = "host" ] && [ -n "$HOST_STORAGES" ] && command -v sqlite3 >/dev/null 2>&1; then
-        for db in whatsapp.db chatstorage.db; do
-            f="${HOST_STORAGES}/${db}"
-            [ -f "$f" ] || continue
-            _b="$(du -m "$f" 2>/dev/null | awk '{print $1}')"
-            if sqlite3 "$f" "PRAGMA wal_checkpoint(TRUNCATE); VACUUM;" >/dev/null 2>&1; then
-                _a="$(du -m "$f" 2>/dev/null | awk '{print $1}')"
-                green "  ${db}: ${_b}MB -> ${_a}MB"
-            else
-                # Umumnya karena core sedang memegang kunci DB. Tidak fatal.
-                yellow "  ${db}: dilewati (terkunci container yang sedang jalan)"
-            fi
-        done
-    else
-        yellow "  Dilewati — butuh sqlite3 di host + bind mount storages."
-        echo "  Pasang: apt-get install -y sqlite3  |  yum install -y sqlite"
-        echo "  Alternatif paling ampuh: hentikan container sebentar lalu ulangi,"
-        echo "  atau kecilkan sumbernya (WHATSAPP_AUTO_DOWNLOAD_MEDIA=false)."
-    fi
-fi
-
-# ---------- prune image dangling (opt-in) ----------
+# ---------- prune image dangling (opt-in, global) ----------
 if [ "$PRUNE_DANGLING" -eq 1 ]; then
     step "Prune image dangling"
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -357,7 +451,12 @@ if [ "$PRUNE_DANGLING" -eq 1 ]; then
 fi
 
 # ---------- hasil ----------
-step "Kondisi akhir"
+step "Ringkasan"
+echo "  Container diproses : ${OK_COUNT} berhasil, ${FAIL_COUNT} gagal"
+if [ "$FAIL_COUNT" -gt 0 ]; then
+    red "  Gagal:${FAILED_NAMES}"
+    echo "  Lihat pesan di atas untuk sebabnya."
+fi
 df -Ph "$DISK_REF" 2>/dev/null | awk 'NR==2{printf "  Disk  : %s dari %s (%s terpakai)\n", $3, $2, $5}'
 df -Pi "$DISK_REF" 2>/dev/null | awk 'NR==2{printf "  Inode : %s dari %s (%s terpakai)\n", $3, $2, $5}'
 DISK_AFTER="$(df -P "$DISK_REF" 2>/dev/null | awk 'NR==2{print $5}' | tr -d '%')"
@@ -370,12 +469,10 @@ if [ -n "$DISK_AFTER" ] && [ "$DISK_AFTER" -ge 90 ] 2>/dev/null; then
     printf "\n"
     red "PERINGATAN: disk masih ${DISK_AFTER}% terpakai."
     echo "Langkah berikutnya, dari yang paling berdampak:"
-    echo "  1. Matikan sumbernya — di src/.env:"
-    echo "       WHATSAPP_AUTO_DOWNLOAD_MEDIA=false"
-    echo "     lalu: docker restart ${CONTAINER}"
+    echo "  1. Matikan sumbernya:  sh gowa-disable-media.sh --all"
     echo "     Media tetap bisa diambil lewat API saat diperlukan."
-    echo "  2. Perpendek retensi:  sh \$0 --media-days 7"
-    echo "  3. Batasi log Docker — tambahkan di compose service ${CONTAINER}:"
+    echo "  2. Perpendek retensi:  sh \$0 --all --media-days 7"
+    echo "  3. Batasi log Docker di compose:"
     echo "       logging: { driver: json-file, options: { max-size: 50m, max-file: 3 } }"
     echo "  4. Image menumpuk:  sh \$0 --prune-dangling"
     echo ""
@@ -384,4 +481,8 @@ if [ -n "$DISK_AFTER" ] && [ "$DISK_AFTER" -ge 90 ] 2>/dev/null; then
 fi
 
 printf "\n"
+if [ "$FAIL_COUNT" -gt 0 ]; then
+    yellow "Selesai dengan ${FAIL_COUNT} container gagal."
+    exit 1
+fi
 green "Selesai."
